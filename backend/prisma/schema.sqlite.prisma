@@ -1,0 +1,1574 @@
+// ============================================================================
+// FILE SINH TỰ ĐỘNG — KHÔNG SỬA TAY. Nguồn: backend/prisma/schema.prisma
+// Sinh lại bằng: node backend/scripts/gen-sqlite-schema.js
+// Dùng cho bản SELF-HOST (SQLite). Bản SaaS server dùng schema.prisma (Postgres) gốc.
+// ============================================================================
+
+// Rabit Spa — Prisma schema (multi-tenant SaaS quản lý spa/salon)
+// Mô hình multi-tenant: shared DB, row-level. Mọi bảng nghiệp vụ có tenantId.
+// Tiền tệ: lưu BigInt đơn vị VNĐ (không thập phân). Thời gian: timestamptz (UTC).
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "darwin-arm64", "darwin", "debian-openssl-3.0.x", "windows"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// NHÓM HỆ THỐNG SaaS (không thuộc tenant nào)
+// ===========================================================================
+
+// [SQLite] enum BusinessType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SPA, HAIR_SALON, BARBERSHOP, NAIL, MASSAGE, PET_SPA, MAKEUP, DENTAL, CLINIC, CAR_SPA
+
+// [SQLite] enum TenantStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): ACTIVE, SUSPENDED, EXPIRED
+
+// [SQLite] enum PlanCode đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): TRIAL, GOLD, PLATINUM, DIAMOND
+
+/// Super Admin — người vận hành nền tảng SaaS (không nằm trong tenant nào).
+model SystemUser {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("system_users")
+}
+
+/// Gói dịch vụ + hạn mức. NULL = không giới hạn.
+model Plan {
+  id                  String   @id @default(uuid())
+  code                String @unique
+  name                String
+  priceMonthly        BigInt   @map("price_monthly") // giá/tháng (VNĐ)
+  priceYearly         BigInt   @map("price_yearly") // giá/năm (VNĐ)
+  maxBranches         Int?     @map("max_branches") // số chi nhánh tối đa
+  maxStaff            Int?     @map("max_staff") // số nhân viên (operator) tối đa
+  maxAccounts         Int?     @map("max_accounts") // số tài khoản đăng nhập tối đa
+  maxCatalogItems     Int?     @map("max_catalog_items") // số dịch vụ + sản phẩm tối đa
+  maxInvoicesPerMonth Int?     @map("max_invoices_per_month") // số hóa đơn/tháng tối đa
+  sortOrder           Int      @default(0) @map("sort_order")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+/// Cửa hàng thuê bao (tenant). Mỗi tenant một subdomain riêng.
+model Tenant {
+  id           String       @id @default(uuid())
+  name         String // tên cửa hàng
+  subdomain    String       @unique // tenspa -> tenspa.rabitspa.vn
+  businessType String @map("business_type")
+  phone        String?
+  address      String?
+  province     String? // tỉnh/thành
+  district     String? // quận/huyện
+  country      String       @default("VN")
+  referralCode String?      @map("referral_code") // mã người giới thiệu (khi đăng ký)
+  status       String @default("ACTIVE")
+  timezone     String       @default("Asia/Ho_Chi_Minh")
+  logoUrl      String?      @map("logo_url")
+  // Tên miền riêng do khách hàng tự mua, đã được Super Admin duyệt. Từ round
+  // "public link", việc trỏ ingress KHÔNG còn làm tay: agent relay trên VPS tự
+  // sinh cấu hình Caddy (xem Script/deploy/vps/relay_sync.py). Null = chưa gắn.
+  customDomain String?      @unique @map("custom_domain")
+
+  // ─── Public link (bản tự cài trên máy khách hàng) ───────────────────────
+  // Cửa hàng tải bản cài về chạy ở máy mình; muốn truy cập được từ ngoài thì
+  // đăng nhập tài khoản trung tâm rồi bấm cấp link public. Khi đó hệ thống tạo
+  // riêng cho cửa hàng một Cloudflare Tunnel, trỏ <subdomain>.rabitspa.com vào
+  // đúng máy đó. Null = chưa từng cấp link (vẫn dùng offline bình thường).
+  cfTunnelId    String? @map("cf_tunnel_id") // id tunnel trên Cloudflare
+  cfDnsRecordId String? @map("cf_dns_record_id") // id bản ghi CNAME đã tạo
+  // Cổng mà bản tự cài đang nghe trên máy khách (mặc định 3000) — dùng dựng
+  // ingress "hostname -> http://localhost:<port>".
+  localPort Int @default(3000) @map("local_port")
+
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  subscription      Subscription?
+  domainRequests    DomainRequest[]
+  pairingCodes      PairingCode[]
+  instances         Instance[]
+  branches          Branch[]
+  users             User[]
+  operators         Operator[]
+  customers         Customer[]
+  serviceCategories ServiceCategory[]
+  services          Service[]
+  productCategories ProductCategory[]
+  products          Product[]
+  appointments      Appointment[]
+  invoices          Invoice[]
+  settings          Setting[]
+  counters          TenantCounter[]
+  cardTemplates     CardTemplate[]
+  customerCards     CustomerCard[]
+  commissionRules   CommissionRule[]
+  vouchers          Voucher[]
+  suppliers         Supplier[]
+  customerTags      CustomerTag[]
+  expenses          Expense[]
+  cashBookEntries   CashBookEntry[]
+  stockBatches      StockBatch[]
+  stockTransfers    StockTransfer[]
+  stockChecks       StockCheck[]
+  customerSegments  CustomerSegment[]
+  messageTemplates  MessageTemplate[]
+  campaigns         Campaign[]
+  messageLogs       MessageLog[]
+  loyaltyRules      LoyaltyRule[]
+  loyaltyLedgers    LoyaltyLedger[]
+  ratings           Rating[]
+  resources         Resource[]
+  surveys           Survey[]
+  surveyResponses   SurveyResponse[]
+
+  @@map("tenants")
+}
+
+// [SQLite] enum SubscriptionStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): TRIALING, ACTIVE, PAST_DUE, CANCELED
+
+// [SQLite] enum BillingCycle đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): MONTHLY, YEARLY
+
+/// Thuê bao của tenant với một gói.
+model Subscription {
+  id           String             @id @default(uuid())
+  tenantId     String             @unique @map("tenant_id")
+  planId       String             @map("plan_id")
+  status       String @default("TRIALING")
+  billingCycle String       @default("MONTHLY") @map("billing_cycle")
+  startsAt     DateTime           @map("starts_at")
+  endsAt       DateTime           @map("ends_at") // hết hạn / hết trial
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@map("subscriptions")
+}
+
+/// Bộ đếm tự tăng theo tenant (mã hóa đơn, mã khách...). Tăng trong transaction.
+model TenantCounter {
+  tenantId String @map("tenant_id")
+  key      String // vd: "invoice", "customer"
+  value    Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, key])
+  @@map("tenant_counters")
+}
+
+// [SQLite] enum AuditActorType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SYSTEM_USER
+
+// [SQLite] enum AuditTargetType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): TENANT
+
+// [SQLite] enum AuditAction đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): TENANT_LOCK, TENANT_UNLOCK, TENANT_CHANGE_PLAN, TENANT_CHANGE_STATUS, TENANT_EXTEND_TRIAL, DOMAIN_REQUEST_APPROVE, DOMAIN_REQUEST_REJECT
+
+/// Nhật ký thao tác của Super Admin lên hệ thống SaaS (không thuộc tenant nào).
+model AuditLog {
+  id         String          @id @default(uuid())
+  actorType  String  @default("SYSTEM_USER") @map("actor_type")
+  actorId    String          @map("actor_id") // SystemUser.id
+  action     String
+  targetType String @default("TENANT") @map("target_type")
+  targetId   String          @map("target_id") // Tenant.id
+  detail     String? // dữ liệu chi tiết thao tác (vd: {"from":"GOLD","to":"DIAMOND"})
+  createdAt  DateTime        @default(now()) @map("created_at")
+
+  @@index([targetType, targetId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ===========================================================================
+// NHÓM TỔ CHỨC TRONG TENANT
+// ===========================================================================
+
+/// Chi nhánh của cửa hàng.
+model Branch {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  name      String
+  address   String?
+  phone     String?
+  isDefault Boolean   @default(false) @map("is_default")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userRoles          UserRole[]
+  operators          Operator[]
+  appointments       Appointment[]
+  invoices           Invoice[]
+  stockTransfersFrom StockTransfer[] @relation("StockTransferFrom")
+  stockTransfersTo   StockTransfer[] @relation("StockTransferTo")
+  stockChecks        StockCheck[]    @relation("StockCheckBranch")
+  resources          Resource[]
+
+  @@index([tenantId])
+  @@map("branches")
+}
+
+// [SQLite] enum RoleName đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): OWNER, MANAGER, RECEPTIONIST, TECHNICIAN, CASHIER, ACCOUNTANT
+
+/// Tài khoản đăng nhập trong tenant (đếm theo max_accounts).
+model User {
+  id           String    @id @default(uuid())
+  tenantId     String    @map("tenant_id")
+  email        String
+  /// Nullable: user tạo qua đăng nhập Google có thể chưa từng đặt mật khẩu
+  /// (đăng nhập Google là cách duy nhất cho tới khi tự đặt qua "Quên mật khẩu").
+  passwordHash String?   @map("password_hash")
+  /// Google `sub` (user id) đã liên kết, null nếu chưa từng đăng nhập bằng
+  /// Google. Scope theo tenant (giống email) — không unique toàn cục vì cùng
+  /// 1 người có thể là chủ ở nhiều tenant khác nhau trong tương lai.
+  googleId     String?   @map("google_id")
+  name         String
+  phone        String?
+  isActive     Boolean   @default(true) @map("is_active")
+  tokenVersion Int       @default(0) @map("token_version")
+  deletedAt    DateTime? @map("deleted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles          UserRole[]
+  operator       Operator? // liên kết 1-1 nếu tài khoản này cũng là nhân viên phục vụ
+  resetTokens    PasswordResetToken[]
+  domainRequests DomainRequest[] // các yêu cầu đổi subdomain/gắn custom domain do user này gửi
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, googleId])
+  @@index([tenantId])
+  @@map("users")
+}
+
+// [SQLite] enum DomainRequestType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SUBDOMAIN, CUSTOM_DOMAIN
+
+// [SQLite] enum DomainRequestStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): PENDING, APPROVED, REJECTED
+
+/// Yêu cầu tenant xin đổi subdomain hoặc gắn custom domain riêng — luôn phải
+/// qua Super Admin duyệt (cả 2 loại). 1 tenant tối đa 1 request PENDING cùng
+/// lúc (kiểm tra ở tầng service), rate-limit 5 request/ngày/tenant.
+model DomainRequest {
+  id                 String              @id @default(uuid())
+  tenantId           String              @map("tenant_id")
+  requestedByUserId  String?             @map("requested_by_user_id")
+  type               String
+  requestedSubdomain String?             @map("requested_subdomain") // bắt buộc nếu type=SUBDOMAIN
+  customDomain       String?             @map("custom_domain") // bắt buộc nếu type=CUSTOM_DOMAIN
+  reason             String?
+  status             String @default("PENDING")
+  // reviewedBy: FK lỏng tới SystemUser.id — KHÔNG đặt quan hệ Prisma trực tiếp
+  // (SystemUser hiện không có relation ngược nào, giữ đơn giản như reviewedBy
+  // của các model audit khác trong hệ thống).
+  reviewedBy         String?             @map("reviewed_by")
+  reviewNote         String?             @map("review_note") // bắt buộc khi reject
+  createdAt          DateTime            @default(now()) @map("created_at")
+  reviewedAt         DateTime?           @map("reviewed_at")
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedByUser User?  @relation(fields: [requestedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("domain_requests")
+}
+
+/// Token đặt lại mật khẩu (quên mật khẩu) — một lần dùng, hết hạn sau thời gian
+/// ngắn. Chỉ lưu bản băm SHA-256 của token (không lưu token thô) để nếu lộ DB
+/// cũng không dùng lại được token gửi qua email.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  userId    String    @map("user_id")
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("password_reset_tokens")
+}
+
+/// Gán vai trò cho user tại một chi nhánh (RBAC theo chi nhánh).
+model UserRole {
+  id       String   @id @default(uuid())
+  tenantId String   @map("tenant_id")
+  userId   String   @map("user_id")
+  branchId String   @map("branch_id")
+  role     String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchId, role])
+  @@index([tenantId])
+  @@map("user_roles")
+}
+
+// [SQLite] enum SalaryType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SALARY_BY_HOUR, SALARY_BY_DAY, SALARY_BY_MONTH
+
+/// Nhân viên / kỹ thuật viên (đếm theo max_staff). Có thể không có tài khoản đăng nhập.
+/// Xuất hiện trên lịch hẹn & dòng hóa đơn để tính hoa hồng, lương.
+model Operator {
+  id                  String     @id @default(uuid())
+  tenantId            String     @map("tenant_id")
+  branchId            String     @map("branch_id") // chi nhánh chính
+  userId              String?    @unique @map("user_id") // tài khoản đăng nhập (nếu có)
+  name                String
+  title               String? // chức danh, vd: Stylist
+  level               Int        @default(1) // cấp bậc / nhóm thợ (1..5)
+  phone               String?
+  email               String?
+  avatarUrl           String?    @map("avatar_url")
+  avatarColor         String?    @map("avatar_color") // màu hiển thị trên calendar
+  isGroup             Boolean    @default(false) @map("is_group") // là nhóm nhân viên (chia hoa hồng)
+  showInPublicBooking Boolean    @default(true) @map("show_in_public_booking")
+  basicSalary         BigInt     @default(0) @map("basic_salary")
+  basicSalaryType     String @default("SALARY_BY_MONTH") @map("basic_salary_type")
+  isActive            Boolean    @default(true) @map("is_active")
+  startDate           DateTime?  @map("start_date")
+  deletedAt           DateTime?  @map("deleted_at")
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch           Branch            @relation(fields: [branchId], references: [id])
+  user             User?             @relation(fields: [userId], references: [id])
+  appointmentItems AppointmentItem[]
+  timesheets       Timesheet[]
+  stockMovements   StockMovement[]
+  ratings          Rating[]
+
+  @@index([tenantId])
+  @@index([tenantId, branchId])
+  @@map("operators")
+}
+
+/// Chấm công theo ngày của nhân viên.
+model Timesheet {
+  id         String    @id @default(uuid())
+  tenantId   String    @map("tenant_id")
+  operatorId String    @map("operator_id")
+  date       DateTime 
+  checkIn    DateTime? @map("check_in")
+  checkOut   DateTime? @map("check_out")
+  note       String?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  operator Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+
+  @@unique([operatorId, date])
+  @@index([tenantId, date])
+  @@map("timesheets")
+}
+
+// ===========================================================================
+// KHÁCH HÀNG (CRM)
+// ===========================================================================
+
+// [SQLite] enum Gender đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): MALE, FEMALE, OTHER
+
+// [SQLite] enum CustomerSource đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): WALK_IN, ONLINE, IMPORT
+
+/// Hồ sơ khách hàng.
+model Customer {
+  id             String         @id @default(uuid())
+  tenantId       String         @map("tenant_id")
+  code           String // mã KH tự tăng theo tenant, vd CS000001
+  fullName       String         @map("full_name")
+  nameNormalized String?        @map("name_normalized") // họ tên không dấu, chữ thường — phục vụ tìm kiếm bỏ dấu
+  mobile         String // số điện thoại (unique trong tenant)
+  email          String?
+  zalo           String?
+  gender         String?
+  avatarColor    String?        @map("avatar_color")
+  address        String?
+  provinceName   String?        @map("province_name")
+  districtName   String?        @map("district_name")
+  dobDate        Int?           @map("dob_date") // ngày sinh (1..31) — tách để lọc sinh nhật
+  dobMonth       Int?           @map("dob_month") // tháng sinh (1..12)
+  dobYear        Int?           @map("dob_year") // năm sinh
+  rank           String         @default("NORMAL") // hạng thành viên
+  loyaltyPoint   Int            @default(0) @map("loyalty_point") // điểm tích lũy
+  debtAmount     BigInt         @default(0) @map("debt_amount") // công nợ (VNĐ)
+  note           String?
+  source         String @default("WALK_IN")
+  deletedAt      DateTime?      @map("deleted_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments    Appointment[]
+  invoices        Invoice[]
+  cards           CustomerCard[]
+  notes           CustomerNote[]
+  photos          CustomerPhoto[]
+  tagLinks        CustomerTagLink[]
+  loyaltyLedgers  LoyaltyLedger[]
+  ratings         Rating[]
+  surveyResponses SurveyResponse[]
+
+  @@unique([tenantId, mobile])
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, nameNormalized])
+  @@map("customers")
+}
+
+/// Ghi chú chăm sóc theo dòng thời gian của khách hàng.
+model CustomerNote {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  customerId String   @map("customer_id")
+  content    String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, customerId, createdAt])
+  @@map("customer_notes")
+}
+
+/// Ảnh hồ sơ/tiến trình trước-sau của khách hàng.
+model CustomerPhoto {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  customerId String   @map("customer_id")
+  dataUrl    String   @map("data_url")
+  caption    String?
+  tag        String? // nhãn phân loại: BEFORE (trước) | AFTER (sau) — null = chưa gắn
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, customerId, createdAt])
+  @@map("customer_photos")
+}
+
+/// Nhãn/phân nhóm CRM do từng tenant tự quản lý.
+model CustomerTag {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  name      String
+  color     String   @default("#7656A8")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  links  CustomerTagLink[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("customer_tags")
+}
+
+model CustomerTagLink {
+  customerId String @map("customer_id")
+  tagId      String @map("tag_id")
+
+  customer Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tag      CustomerTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([customerId, tagId])
+  @@index([tagId])
+  @@map("customer_tag_links")
+}
+
+// ===========================================================================
+// DANH MỤC DỊCH VỤ / SẢN PHẨM
+// ===========================================================================
+
+/// Nhóm dịch vụ.
+model ServiceCategory {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  name      String
+  sortOrder Int       @default(0) @map("sort_order")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  services Service[]
+
+  @@index([tenantId])
+  @@map("service_categories")
+}
+
+/// Dịch vụ.
+model Service {
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  categoryId      String?   @map("category_id")
+  name            String
+  code            String? // mã dịch vụ (vd DV001) — hiển thị trên POS/danh mục
+  price           BigInt    @default(0) // giá (VNĐ)
+  durationMinutes Int       @default(30) @map("duration_minutes") // thời lượng (phút)
+  description     String?
+  imageUrl        String?   @map("image_url")
+  isActive        Boolean   @default(true) @map("is_active")
+  deletedAt       DateTime? @map("deleted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  tenant           Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category         ServiceCategory?     @relation(fields: [categoryId], references: [id])
+  appointmentItems AppointmentItem[]
+  consumptions     ServiceConsumption[]
+
+  @@index([tenantId])
+  @@index([tenantId, categoryId])
+  @@map("services")
+}
+
+/// Nhóm sản phẩm.
+model ProductCategory {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  name      String
+  sortOrder Int       @default(0) @map("sort_order")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@index([tenantId])
+  @@map("product_categories")
+}
+
+/// Sản phẩm bán lẻ tại quầy.
+model Product {
+  id         String    @id @default(uuid())
+  tenantId   String    @map("tenant_id")
+  categoryId String?   @map("category_id")
+  name       String
+  sku        String? // mã SKU / barcode (dùng làm "mã" hiển thị POS/danh mục)
+  imageUrl   String?   @map("image_url") // ảnh sản phẩm (thumbnail POS/danh mục)
+  unit       String? // đơn vị tính
+  price      BigInt    @default(0) // giá bán (VNĐ)
+  costPrice  BigInt    @default(0) @map("cost_price") // giá vốn (VNĐ)
+  isActive   Boolean   @default(true) @map("is_active")
+  deletedAt  DateTime? @map("deleted_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category      ProductCategory?     @relation(fields: [categoryId], references: [id])
+  stocks        InventoryStock[]
+  movements     StockMovement[]
+  consumedBy    ServiceConsumption[]
+  batches       StockBatch[]
+  transferItems StockTransferItem[]
+  checkItems    StockCheckItem[]
+
+  @@index([tenantId])
+  @@index([tenantId, categoryId])
+  @@map("products")
+}
+
+/// Nhà cung cấp (mua hàng nhập kho).
+model Supplier {
+  id        String    @id @default(uuid())
+  tenantId  String    @map("tenant_id")
+  name      String
+  phone     String?
+  address   String?
+  note      String?
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  batches StockBatch[]
+
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+/// Định mức tiêu hao nguyên liệu (sản phẩm) cho mỗi dịch vụ.
+/// Khi bán dịch vụ, tự trừ kho các nguyên liệu này.
+model ServiceConsumption {
+  id        String @id @default(uuid())
+  tenantId  String @map("tenant_id")
+  serviceId String @map("service_id")
+  productId String @map("product_id")
+  quantity  Int    @default(1)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, productId])
+  @@index([tenantId])
+  @@map("service_consumptions")
+}
+
+// [SQLite] enum StockMovementType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): PURCHASE, SALE, RETURN, ADJUST, TRANSFER
+
+/// Tồn kho hiện tại theo sản phẩm × chi nhánh.
+model InventoryStock {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  productId String   @map("product_id")
+  branchId  String   @map("branch_id")
+  quantity  Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, branchId])
+  @@index([tenantId])
+  @@map("inventory_stocks")
+}
+
+/// Lịch sử biến động kho (nhập/xuất/điều chỉnh).
+model StockMovement {
+  id         String            @id @default(uuid())
+  tenantId   String            @map("tenant_id")
+  productId  String            @map("product_id")
+  branchId   String            @map("branch_id")
+  type       String
+  quantity   Int // dương = nhập, âm = xuất
+  costPrice  BigInt            @default(0) @map("cost_price") // giá nhập (khi PURCHASE)
+  operatorId String?           @map("operator_id") // nhân viên thực hiện (nullable — data cũ chưa gán)
+  batchId    String?           @map("batch_id") // lô hàng liên quan (nullable — không bắt buộc gắn lô)
+  note       String?
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  product  Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  operator Operator?   @relation(fields: [operatorId], references: [id])
+  batch    StockBatch? @relation(fields: [batchId], references: [id])
+
+  @@index([tenantId, productId])
+  @@index([tenantId, operatorId])
+  @@index([tenantId, batchId])
+  @@index([tenantId, createdAt]) // báo cáo Nhập-Xuất kho lọc theo khoảng ngày (inventory-reports.service movements())
+  @@map("stock_movements")
+}
+
+/// Lô hàng nhập kho (batch/lot) — theo dõi tồn theo lô: số lô, HSD, SL còn, giá vốn.
+/// Chỉ THÊM (non-breaking): bảng mới, không ảnh hưởng luồng tồn kho hiện tại.
+model StockBatch {
+  id                String    @id @default(uuid())
+  tenantId          String    @map("tenant_id")
+  productId         String    @map("product_id")
+  branchId          String?   @map("branch_id") // chi nhánh nhập (nullable)
+  supplierId        String?   @map("supplier_id") // nhà cung cấp (nullable)
+  batchNo           String    @map("batch_no") // số lô / lot no
+  expiryDate        DateTime? @map("expiry_date") // hạn sử dụng (nullable)
+  quantityIn        Int       @default(0) @map("quantity_in") // SL nhập ban đầu
+  quantityRemaining Int       @default(0) @map("quantity_remaining") // SL còn lại của lô
+  costPrice         BigInt    @default(0) @map("cost_price") // giá vốn / đơn vị (VNĐ)
+  note              String?
+  receivedAt        DateTime  @default(now()) @map("received_at") // ngày nhập lô
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier  Supplier?       @relation(fields: [supplierId], references: [id])
+  movements StockMovement[]
+
+  @@index([tenantId, productId])
+  @@index([tenantId, expiryDate])
+  @@map("stock_batches")
+}
+
+/// Trạng thái phiếu kho (chuyển kho / kiểm kho).
+// [SQLite] enum StockDocStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): PENDING, APPROVED, CANCELED
+
+/// Phiếu CHUYỂN KHO giữa 2 chi nhánh (Round 16).
+/// Chỉ THÊM (non-breaking). Khi duyệt → sinh 2 stock_movements (TRANSFER: xuất nguồn + nhập đích)
+/// nguyên tử, cập nhật tồn 2 chi nhánh. Ở trạng thái PENDING KHÔNG tác động tồn.
+model StockTransfer {
+  id            String         @id @default(uuid())
+  tenantId      String         @map("tenant_id")
+  code          String // mã phiếu, vd CK000001
+  fromBranchId  String         @map("from_branch_id") // chi nhánh nguồn (xuất)
+  toBranchId    String         @map("to_branch_id") // chi nhánh đích (nhập)
+  status        String @default("PENDING")
+  note          String?
+  createdById   String?        @map("created_by_id") // userId người tạo (snapshot, không FK)
+  createdByName String?        @map("created_by_name") // tên người tạo (snapshot)
+  approvedById  String?        @map("approved_by_id") // userId người duyệt (snapshot)
+  approvedAt    DateTime?      @map("approved_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fromBranch Branch              @relation("StockTransferFrom", fields: [fromBranchId], references: [id])
+  toBranch   Branch              @relation("StockTransferTo", fields: [toBranchId], references: [id])
+  items      StockTransferItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("stock_transfers")
+}
+
+/// Dòng sản phẩm trong phiếu chuyển kho.
+model StockTransferItem {
+  id         String @id @default(uuid())
+  transferId String @map("transfer_id")
+  productId  String @map("product_id")
+  quantity   Int // số lượng chuyển (dương)
+
+  transfer StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product       @relation(fields: [productId], references: [id])
+
+  @@index([transferId])
+  @@map("stock_transfer_items")
+}
+
+/// Phiếu KIỂM KHO / điều chỉnh tồn (Round 16).
+/// Chỉ THÊM (non-breaking). Khi duyệt → sinh stock_movements(ADJUST) bù chênh lệch (thực tế − hệ thống)
+/// cho từng dòng có chênh lệch, cập nhật tồn. Ở trạng thái PENDING KHÔNG tác động tồn.
+model StockCheck {
+  id            String         @id @default(uuid())
+  tenantId      String         @map("tenant_id")
+  code          String // mã phiếu, vd KK000001
+  branchId      String         @map("branch_id") // chi nhánh kiểm kho
+  status        String @default("PENDING")
+  note          String?
+  createdById   String?        @map("created_by_id")
+  createdByName String?        @map("created_by_name")
+  approvedById  String?        @map("approved_by_id")
+  approvedAt    DateTime?      @map("approved_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch           @relation("StockCheckBranch", fields: [branchId], references: [id])
+  items  StockCheckItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("stock_checks")
+}
+
+/// Dòng sản phẩm trong phiếu kiểm kho (tồn hệ thống lúc lập + tồn thực tế kiểm đếm).
+model StockCheckItem {
+  id        String @id @default(uuid())
+  checkId   String @map("check_id")
+  productId String @map("product_id")
+  systemQty Int    @map("system_qty") // tồn hệ thống lúc lập phiếu (snapshot)
+  actualQty Int    @map("actual_qty") // tồn thực tế kiểm đếm
+
+  check   StockCheck @relation(fields: [checkId], references: [id], onDelete: Cascade)
+  product Product    @relation(fields: [productId], references: [id])
+
+  @@index([checkId])
+  @@map("stock_check_items")
+}
+
+// ===========================================================================
+// LỊCH HẸN
+// ===========================================================================
+
+// [SQLite] enum AppointmentStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): UNCONFIRMED, CONFIRMED, CHECKED_IN, IN_SERVICE, COMPLETED, CANCELED, NO_SHOW
+
+// [SQLite] enum AppointmentSource đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): STAFF, ONLINE, PHONE, WALK_IN, ZALO, FACEBOOK, INSTAGRAM, OTHER
+
+// [SQLite] enum ResourceType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): BED, CHAIR, ROOM
+
+/// Tài nguyên vật lý (giường/ghế/phòng) theo chi nhánh — dùng cho sơ đồ giường/ghế.
+model Resource {
+  id         String       @id @default(uuid())
+  tenantId   String       @map("tenant_id")
+  branchId   String       @map("branch_id")
+  name       String
+  type       String @default("BED")
+  orderIndex Int          @default(0) @map("order_index")
+  active     Boolean      @default(true)
+  deletedAt  DateTime?    @map("deleted_at")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  appointments Appointment[]
+
+  @@index([tenantId, branchId])
+  @@map("resources")
+}
+
+/// Lịch hẹn.
+model Appointment {
+  id              String            @id @default(uuid())
+  tenantId        String            @map("tenant_id")
+  branchId        String            @map("branch_id")
+  customerId      String?           @map("customer_id")
+  code            String // mã lịch hẹn theo tenant
+  status          String @default("UNCONFIRMED")
+  startAt         DateTime          @map("start_at")
+  endAt           DateTime          @map("end_at")
+  note            String?
+  source          String @default("STAFF")
+  guestCount      Int               @default(1) @map("guest_count")
+  resourceName    String?           @map("resource_name")
+  resourceId      String?           @map("resource_id")
+  canceledReason  String?           @map("canceled_reason")
+  reminderSentAt  DateTime?         @map("reminder_sent_at")
+  reminderChannel String?           @map("reminder_channel")
+  deletedAt       DateTime?         @map("deleted_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch            @relation(fields: [branchId], references: [id])
+  customer Customer?         @relation(fields: [customerId], references: [id])
+  resource Resource?         @relation(fields: [resourceId], references: [id])
+  items    AppointmentItem[]
+  invoice  Invoice?
+
+  @@unique([tenantId, code])
+  @@index([tenantId, branchId, startAt])
+  @@index([tenantId, status])
+  @@map("appointments")
+}
+
+/// Một dịch vụ trong lịch hẹn, gán kỹ thuật viên phục vụ.
+model AppointmentItem {
+  id              String   @id @default(uuid())
+  appointmentId   String   @map("appointment_id")
+  serviceId       String   @map("service_id")
+  operatorId      String?  @map("operator_id") // kỹ thuật viên phục vụ
+  durationMinutes Int      @map("duration_minutes")
+  priceSnapshot   BigInt   @map("price_snapshot")
+  startAt         DateTime @map("start_at")
+  endAt           DateTime @map("end_at")
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  service     Service     @relation(fields: [serviceId], references: [id])
+  operator    Operator?   @relation(fields: [operatorId], references: [id])
+
+  @@index([appointmentId])
+  @@index([operatorId, startAt])
+  @@map("appointment_items")
+}
+
+// ===========================================================================
+// HÓA ĐƠN & THANH TOÁN (POS)
+// ===========================================================================
+
+// [SQLite] enum DiscountType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): PERCENT, AMOUNT
+
+// [SQLite] enum InvoiceStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): DRAFT, PENDING, PAID, PARTIALLY_PAID, CANCELED
+
+// [SQLite] enum InvoiceItemType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SERVICE, PRODUCT
+
+// [SQLite] enum PaymentMethod đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): CASH, BANK_TRANSFER, CARD, MONEY_CARD
+
+/// Hóa đơn.
+model Invoice {
+  id             String        @id @default(uuid())
+  tenantId       String        @map("tenant_id")
+  branchId       String        @map("branch_id")
+  customerId     String?       @map("customer_id") // null = khách lẻ
+  appointmentId  String?       @unique @map("appointment_id")
+  voucherId      String?       @map("voucher_id")
+  code           String // mã hóa đơn tự tăng theo tenant, vd INV000001
+  idempotencyKey String?       @map("idempotency_key")
+  requestHash    String?       @map("request_hash")
+  status         String @default("DRAFT")
+  subtotal       BigInt        @default(0) // tổng trước giảm giá
+  discountType   String? @map("discount_type")
+  discountValue  BigInt        @default(0) @map("discount_value")
+  tipAmount      BigInt        @default(0) @map("tip_amount")
+  taxAmount      BigInt        @default(0) @map("tax_amount")
+  serviceCharge  BigInt        @default(0) @map("service_charge")
+  loyaltyAwarded Int           @default(0) @map("loyalty_awarded")
+  total          BigInt        @default(0) // tổng phải trả
+  paidAmount     BigInt        @default(0) @map("paid_amount")
+  debtAmount     BigInt        @default(0) @map("debt_amount") // = total - paidAmount
+  note           String?
+  createdById    String?       @map("created_by_id")
+  canceledById   String?       @map("canceled_by_id")
+  canceledReason String?       @map("canceled_reason")
+  paidAt         DateTime?     @map("paid_at")
+  deletedAt      DateTime?     @map("deleted_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch           @relation(fields: [branchId], references: [id])
+  customer    Customer?        @relation(fields: [customerId], references: [id])
+  appointment Appointment?     @relation(fields: [appointmentId], references: [id])
+  voucher     Voucher?         @relation(fields: [voucherId], references: [id])
+  items       InvoiceItem[]
+  payments    Payment[]
+  feedback    InvoiceFeedback?
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@index([voucherId])
+  @@index([tenantId, customerId, createdAt]) // lịch sử/công nợ theo khách (customers.history, reports.customerDebt)
+  @@index([tenantId, branchId, createdAt]) // báo cáo lọc theo chi nhánh + khoảng ngày (reports.service invRevenueWhere)
+  @@map("invoices")
+}
+
+/// Đánh giá sau dịch vụ gắn với hóa đơn để tránh đánh giá trùng.
+model InvoiceFeedback {
+  id        String   @id @default(uuid())
+  invoiceId String   @unique @map("invoice_id")
+  score     Int
+  comment   String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_feedback")
+}
+
+/// Dòng hóa đơn (dịch vụ hoặc sản phẩm). Gán 4 vai trò nhân viên để tính hoa hồng.
+model InvoiceItem {
+  id             String          @id @default(uuid())
+  invoiceId      String          @map("invoice_id")
+  itemType       String @map("item_type")
+  refId          String?         @map("ref_id") // serviceId hoặc productId
+  nameSnapshot   String          @map("name_snapshot")
+  priceSnapshot  BigInt          @map("price_snapshot")
+  quantity       Int             @default(1)
+  discount       BigInt          @default(0)
+  serverId       String?         @map("server_id") // N.V phục vụ
+  sellerId       String?         @map("seller_id") // N.V bán hàng
+  consultantId   String?         @map("consultant_id") // N.V tư vấn
+  referralSource String?         @map("referral_source") // nguồn giới thiệu
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([serverId])
+  @@index([sellerId])
+  @@index([consultantId])
+  @@map("invoice_items")
+}
+
+/// Thanh toán cho hóa đơn (một hóa đơn có thể có nhiều lần / nhiều phương thức).
+model Payment {
+  id        String        @id @default(uuid())
+  invoiceId String        @map("invoice_id")
+  cashierId String?       @map("cashier_id") // thu ngân nhận tiền (User); gán lúc checkout
+  method    String
+  amount    BigInt
+  isRefund  Boolean       @default(false) @map("is_refund")
+  note      String?
+  paidAt    DateTime      @default(now()) @map("paid_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([cashierId])
+  @@index([paidAt]) // lọc theo khoảng ngày thu tiền — dùng trong hầu hết báo cáo (revenue/daily/summary/cashflow/dashboard)
+  @@map("payments")
+}
+
+// [SQLite] enum CashFlowType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): THU, CHI
+
+/// Sổ quỹ thu/chi tiền mặt: ghi các khoản thu/chi ngoài bán hàng
+/// (nộp quỹ, rút quỹ, chi phí, hoàn tiền...) để theo dõi số dư quỹ.
+model CashBookEntry {
+  id           String       @id @default(uuid())
+  tenantId     String       @map("tenant_id")
+  branchId     String?      @map("branch_id")
+  code         String // mã phiếu tự tăng theo tenant, vd CQ000001
+  type         String
+  amount       BigInt // số tiền nguyên VNĐ (luôn dương)
+  category     String // nhãn: nộp quỹ / rút quỹ / chi phí / hoàn tiền / khác
+  note         String?
+  refInvoiceId String?      @map("ref_invoice_id") // liên kết hóa đơn (nếu có)
+  createdById  String?      @map("created_by_id") // người lập phiếu
+  occurredAt   DateTime     @default(now()) @map("occurred_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, type])
+  @@map("cashbook_entries")
+}
+
+/// Khoản chi vận hành của cửa hàng, dùng cho sổ quỹ và báo cáo dòng tiền.
+model Expense {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  branchId   String?  @map("branch_id")
+  category   String
+  amount     BigInt
+  note       String?
+  occurredAt DateTime @default(now()) @map("occurred_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, occurredAt])
+  @@map("expenses")
+}
+
+// ===========================================================================
+// CÀI ĐẶT & KHÁC
+// ===========================================================================
+
+/// Cấu hình key-value theo tenant (thuế, phí phục vụ, tip, loyalty, mã đơn...).
+model Setting {
+  tenantId  String   @map("tenant_id")
+  key       String
+  valueJson String     @map("value_json")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, key])
+  @@map("settings")
+}
+
+/// Dữ liệu hành chính VN (bảng chung).
+model Province {
+  code      String     @id
+  name      String
+  districts District[]
+
+  @@map("provinces")
+}
+
+model District {
+  code         String @id
+  name         String
+  provinceCode String @map("province_code")
+
+  province Province @relation(fields: [provinceCode], references: [code])
+
+  @@index([provinceCode])
+  @@map("districts")
+}
+
+// ===========================================================================
+// THẺ DỊCH VỤ & LIỆU TRÌNH
+// ===========================================================================
+
+// [SQLite] enum CardType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): PREPAID, PACKAGE
+
+// [SQLite] enum CardStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): ACTIVE, USED, EXPIRED, FROZEN
+
+// [SQLite] enum CardTxnType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): ISSUE, REDEEM, REFUND, EXTEND, ADJUST
+
+/// Mẫu thẻ (định nghĩa gói thẻ để bán).
+model CardTemplate {
+  id            String    @id @default(uuid())
+  tenantId      String    @map("tenant_id")
+  type          String
+  name          String
+  price         BigInt // giá bán thẻ (VNĐ)
+  faceValue     BigInt    @default(0) @map("face_value") // PREPAID: giá trị nạp vào thẻ
+  bonusValue    BigInt    @default(0) @map("bonus_value") // PREPAID: khuyến mãi thêm
+  serviceId     String?   @map("service_id") // PACKAGE: dịch vụ áp dụng
+  totalSessions Int       @default(0) @map("total_sessions") // PACKAGE: tổng số buổi
+  validityDays  Int       @default(365) @map("validity_days") // số ngày hiệu lực
+  isActive      Boolean   @default(true) @map("is_active")
+  deletedAt     DateTime? @map("deleted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cards  CustomerCard[]
+
+  @@index([tenantId])
+  @@map("card_templates")
+}
+
+/// Thẻ đã phát hành cho khách hàng.
+model CustomerCard {
+  id                String     @id @default(uuid())
+  tenantId          String     @map("tenant_id")
+  customerId        String     @map("customer_id")
+  templateId        String     @map("template_id")
+  code              String // mã thẻ theo tenant
+  type              String
+  status            String @default("ACTIVE")
+  remainingValue    BigInt     @default(0) @map("remaining_value") // PREPAID: tiền còn lại
+  remainingSessions Int        @default(0) @map("remaining_sessions") // PACKAGE: buổi còn lại
+  issuedAt          DateTime   @default(now()) @map("issued_at")
+  expiresAt         DateTime   @map("expires_at")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer          @relation(fields: [customerId], references: [id])
+  template     CardTemplate      @relation(fields: [templateId], references: [id])
+  transactions CardTransaction[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, customerId])
+  @@map("customer_cards")
+}
+
+/// Voucher / mã giảm giá.
+model Voucher {
+  id            String       @id @default(uuid())
+  tenantId      String       @map("tenant_id")
+  code          String // mã voucher (khách nhập tại POS)
+  name          String
+  discountType  String @map("discount_type") // PERCENT | AMOUNT
+  discountValue BigInt       @map("discount_value")
+  maxDiscount   BigInt       @default(0) @map("max_discount") // trần giảm khi PERCENT (0 = không trần)
+  minOrder      BigInt       @default(0) @map("min_order") // đơn tối thiểu để áp dụng
+  totalQuantity Int?         @map("total_quantity") // tổng lượt dùng (null = không giới hạn)
+  usedCount     Int          @default(0) @map("used_count")
+  expiresAt     DateTime?    @map("expires_at")
+  isActive      Boolean      @default(true) @map("is_active")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("vouchers")
+}
+
+// ===========================================================================
+// HOA HỒNG NHÂN VIÊN
+// ===========================================================================
+
+// [SQLite] enum CommissionRole đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SERVER, CONSULTANT, SELLER
+
+// [SQLite] enum CommissionScope đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): ALL, SERVICE, PRODUCT
+
+// [SQLite] enum CommissionValueType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): PERCENT, FIXED
+
+/// Quy tắc tính hoa hồng. refId != null = quy tắc riêng cho 1 dịch vụ/sản phẩm.
+model CommissionRule {
+  id        String              @id @default(uuid())
+  tenantId  String              @map("tenant_id")
+  role      String
+  scope     String     @default("ALL")
+  refId     String?             @map("ref_id") // dịch vụ/sản phẩm cụ thể
+  valueType String @default("PERCENT") @map("value_type")
+  value     BigInt // PERCENT: 1-100 ; FIXED: VNĐ
+  isActive  Boolean             @default(true) @map("is_active")
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("commission_rules")
+}
+
+/// Lịch sử giao dịch của thẻ.
+model CardTransaction {
+  id             String      @id @default(uuid())
+  tenantId       String      @map("tenant_id")
+  customerCardId String      @map("customer_card_id")
+  invoiceId      String?     @map("invoice_id") // hóa đơn gắn giao dịch trừ thẻ (nếu phát sinh qua POS)
+  type           String
+  valueDelta     BigInt      @default(0) @map("value_delta") // thay đổi tiền (âm khi trừ)
+  sessionDelta   Int         @default(0) @map("session_delta") // thay đổi buổi (âm khi trừ)
+  note           String?
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  card CustomerCard @relation(fields: [customerCardId], references: [id], onDelete: Cascade)
+
+  @@index([customerCardId])
+  @@index([invoiceId])
+  @@index([tenantId, type, createdAt]) // reports.service summary()/daily() lọc REDEEM theo tenantId+khoảng ngày — trước đây KHÔNG có index nào theo tenantId trên bảng này
+  @@map("card_transactions")
+}
+
+// ===========================================================================
+// MARKETING — Chăm sóc khách hàng qua SMS / Zalo OA (ZNS)
+// Round 13 (P3): quản lý nhóm khách (segment) · mẫu tin · chiến dịch · lịch sử gửi.
+// LƯU Ý: việc GỬI THẬT cần cổng ngoài (SMS provider / Zalo OA token) — hiện dùng
+// STUB (ghi MessageLog, đánh dấu đã gửi, ước tính chi phí; KHÔNG gọi mạng ngoài).
+// ===========================================================================
+
+// [SQLite] enum MessageChannel đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SMS, ZALO
+
+// [SQLite] enum CampaignStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): DRAFT, SCHEDULED, SENT
+
+// [SQLite] enum MessageStatus đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): SENT, FAILED
+
+/// Nhóm / phân khúc khách hàng — tiêu chí lọc lưu dạng JSON (hạng, sinh nhật,
+/// công nợ, chưa ghé N ngày, nguồn, giới tính). Dùng để chọn người nhận chiến dịch.
+model CustomerSegment {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String
+  description String?
+  criteria    String     @default("{}") @map("criteria") // { rank?, hasBirthdayThisMonth?, hasDebt?, notVisitedDays?, source?, gender? }
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@index([tenantId])
+  @@map("customer_segments")
+}
+
+/// Mẫu tin nhắn (SMS/Zalo). Nội dung chứa biến {ten_khach}, {ma_kh}, {sdt},
+/// {hang}, {diem}, {cong_no}, {ten_spa} — render theo từng khách khi gửi.
+model MessageTemplate {
+  id        String         @id @default(uuid())
+  tenantId  String         @map("tenant_id")
+  channel   String
+  name      String
+  content   String        
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@index([tenantId])
+  @@map("message_templates")
+}
+
+/// Chiến dịch gửi tin: chọn kênh + nhóm nhận (segment) + mẫu tin, ước tính chi phí,
+/// gửi (stub) → sinh MessageLog cho từng khách trong nhóm.
+model Campaign {
+  id             String         @id @default(uuid())
+  tenantId       String         @map("tenant_id")
+  code           String // mã chiến dịch tự tăng theo tenant, vd CP000001
+  name           String
+  channel        String
+  segmentId      String?        @map("segment_id")
+  templateId     String?        @map("template_id")
+  status         String @default("DRAFT")
+  scheduledAt    DateTime?      @map("scheduled_at") // thời điểm dự kiến gửi
+  sentAt         DateTime?      @map("sent_at") // thời điểm gửi thực (stub)
+  recipientCount Int            @default(0) @map("recipient_count") // số khách nhận (chốt lúc gửi)
+  messageCount   Int            @default(0) @map("message_count") // tổng số tin (tính phân mảnh SMS)
+  estimatedCost  BigInt         @default(0) @map("estimated_cost") // chi phí ước tính (VNĐ)
+  createdById    String?        @map("created_by_id")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  segment  CustomerSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  template MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  logs     MessageLog[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("campaigns")
+}
+
+/// Lịch sử gửi từng tin (một dòng / khách / lần gửi). content = nội dung đã render.
+model MessageLog {
+  id           String         @id @default(uuid())
+  tenantId     String         @map("tenant_id")
+  campaignId   String?        @map("campaign_id")
+  customerId   String?        @map("customer_id")
+  customerName String         @map("customer_name") // snapshot tên khách lúc gửi
+  recipient    String // SĐT (SMS) hoặc Zalo id lúc gửi
+  channel      String
+  content      String         // nội dung đã render theo khách
+  status       String  @default("SENT")
+  cost         BigInt         @default(0) // chi phí tin này (VNĐ)
+  messageParts Int            @default(1) @map("message_parts") // số mảnh SMS của tin
+  error        String? // lý do FAILED (stub)
+  sentAt       DateTime       @default(now()) @map("sent_at")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, sentAt])
+  @@index([tenantId, campaignId])
+  @@map("message_logs")
+}
+
+// ============================================================================
+// LOYALTY (điểm tích lũy) — Round 17. Chỉ THÊM bảng, không sửa luồng cũ.
+// ============================================================================
+
+/// Loại giao dịch điểm: EARN cộng khi mua, REDEEM khi đổi điểm→tiền,
+// [SQLite] enum LoyaltyTxnType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): EARN, REDEEM, ADJUST
+
+/// Quy tắc tích/đổi điểm theo tenant. Có thể có nhiều quy tắc nhưng chỉ 1 active.
+/// amountPerPoint đ chi tiêu = pointPerUnit điểm; redeemPointValue = giá trị 1 điểm khi đổi (VNĐ).
+model LoyaltyRule {
+  id               String   @id @default(uuid())
+  tenantId         String   @map("tenant_id")
+  name             String   @default("Quy tắc mặc định")
+  active           Boolean  @default(true)
+  amountPerPoint   BigInt   @default(100000) @map("amount_per_point") // số tiền chi tiêu cho mỗi mốc tích điểm
+  pointPerUnit     Int      @default(1) @map("point_per_unit") // số điểm cộng cho mỗi mốc
+  redeemPointValue BigInt   @default(1000) @map("redeem_point_value") // giá trị quy đổi 1 điểm (VNĐ)
+  minRedeemPoint   Int      @default(0) @map("min_redeem_point") // số điểm tối thiểu mỗi lần đổi
+  expiryDays       Int?     @map("expiry_days") // hạn dùng điểm (ngày), null = không hết hạn
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, active])
+  @@map("loyalty_rules")
+}
+
+/// Sổ cái giao dịch điểm — append-only, phản ánh trung thực mọi thay đổi
+/// của Customer.loyaltyPoint. balanceAfter = số dư điểm sau giao dịch.
+model LoyaltyLedger {
+  id           String         @id @default(uuid())
+  tenantId     String         @map("tenant_id")
+  customerId   String         @map("customer_id")
+  type         String
+  points       Int // dương khi cộng, âm khi trừ
+  balanceAfter Int            @map("balance_after") // số dư điểm sau giao dịch
+  refInvoiceId String?        @map("ref_invoice_id") // hóa đơn liên quan (nếu có)
+  moneyValue   BigInt         @default(0) @map("money_value") // giá trị quy đổi (VNĐ) cho REDEEM
+  note         String?
+  createdById  String?        @map("created_by_id")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, customerId, createdAt])
+  @@index([tenantId, type])
+  @@map("loyalty_ledgers")
+}
+
+/// Đánh giá dịch vụ/nhân viên (Round 17 phần B). Tách khỏi InvoiceFeedback để
+/// gắn được operatorId phục vụ báo cáo điểm trung bình theo nhân viên.
+model Rating {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  invoiceId  String?  @map("invoice_id")
+  operatorId String?  @map("operator_id") // nhân viên được đánh giá
+  customerId String?  @map("customer_id")
+  score      Int // 1..5
+  comment    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  operator Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, operatorId])
+  @@map("ratings")
+}
+
+// ============================================================================
+// KHẢO SÁT KHÁCH HÀNG (Survey) — Round 21. Chỉ THÊM bảng mới, không sửa bảng cũ.
+// ============================================================================
+
+// [SQLite] enum SurveyQuestionType đã xoá (SQLite không hỗ trợ khai báo enum), field liên quan dùng String.
+// Giá trị hợp lệ (áp dụng ở tầng DTO class-validator @IsEnum): RATING, SINGLE_CHOICE, MULTI_CHOICE, TEXT
+
+/// Bộ khảo sát của tenant (gồm nhiều câu hỏi). active = đang mở thu phản hồi.
+model Survey {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  questions SurveyQuestion[]
+  responses SurveyResponse[]
+
+  @@index([tenantId, active])
+  @@map("surveys")
+}
+
+/// Một câu hỏi trong khảo sát. options (JSON string[]) dùng cho SINGLE/MULTI_CHOICE.
+model SurveyQuestion {
+  id         String             @id @default(uuid())
+  surveyId   String             @map("survey_id")
+  content    String
+  type       String
+  options    String? // danh sách lựa chọn cho câu SINGLE/MULTI_CHOICE
+  orderIndex Int                @default(0) @map("order_index")
+  required   Boolean            @default(false)
+
+  survey  Survey         @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  answers SurveyAnswer[]
+
+  @@index([surveyId, orderIndex])
+  @@map("survey_questions")
+}
+
+/// Một lượt phản hồi khảo sát (có thể gắn khách hàng/hóa đơn hoặc ẩn danh).
+model SurveyResponse {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  surveyId   String   @map("survey_id")
+  customerId String?  @map("customer_id")
+  invoiceId  String?  @map("invoice_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  survey   Survey         @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  customer Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  answers  SurveyAnswer[]
+
+  @@index([tenantId, surveyId, createdAt])
+  @@map("survey_responses")
+}
+
+/// Đáp án cho từng câu trong một lượt phản hồi.
+/// valueScore (RATING), valueText (TEXT), valueOptions (JSON string[] cho CHOICE).
+model SurveyAnswer {
+  id           String  @id @default(uuid())
+  responseId   String  @map("response_id")
+  questionId   String  @map("question_id")
+  valueScore   Int?    @map("value_score")
+  valueText    String? @map("value_text")
+  valueOptions String?   @map("value_options")
+
+  response SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  question SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([responseId])
+  @@index([questionId])
+  @@map("survey_answers")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Public link cho bản tự cài — mô hình lấy theo pos_banhang (rabitpos).
+//
+// Bối cảnh: cửa hàng tải bản cài về, chạy trên máy của mình và dùng offline
+// bình thường. Khi muốn truy cập được từ bên ngoài (điện thoại, chi nhánh,
+// khách đặt lịch), họ đăng nhập tài khoản trung tâm ở rabitspa.com và xin cấp
+// link public. Máy tại cửa hàng KHÔNG mở cổng nào ra Internet — nó tự mở một
+// kết nối đi ra tới Cloudflare, và Cloudflare đưa request vào đúng kết nối đó.
+//
+// Ba bảng dưới đây nối tài khoản trên web với tiến trình đang chạy ở máy khách:
+//   SsoCode     — trao phiên đăng nhập từ rabitspa.com sang subdomain cửa hàng
+//   PairingCode — mã ngắn hạn để máy tại cửa hàng nhận thông tin kết nối
+//   Instance    — từng máy đã ghép, để biết máy nào còn sống
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Mã trao phiên dùng MỘT LẦN, sống rất ngắn.
+///
+/// Đăng nhập diễn ra tập trung ở rabitspa.com (kể cả đăng nhập bằng Google),
+/// nhưng ứng dụng lại chạy ở subdomain riêng của từng cửa hàng — hai nơi khác
+/// origin nên không dùng chung được cookie/localStorage. Thay vì gửi thẳng
+/// token đăng nhập qua URL (sẽ nằm lại trong lịch sử trình duyệt, log máy chủ,
+/// header Referer), trang chủ chỉ chuyển sang subdomain kèm một mã ngẫu nhiên;
+/// subdomain đổi mã đó lấy token thật qua một lần gọi API, rồi mã hết hiệu lực.
+model SsoCode {
+  id        String    @id @default(uuid())
+  code      String    @unique // chuỗi ngẫu nhiên, chỉ dùng được một lần
+  userId    String    @map("user_id")
+  tenantId  String    @map("tenant_id")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("sso_codes")
+}
+
+/// Mã ghép máy — cách máy tại cửa hàng chứng minh nó thuộc về tài khoản nào.
+///
+/// Chủ cửa hàng bấm "Ghép máy" trên web, nhận một mã ngắn rồi gõ vào ứng dụng
+/// đang chạy ở máy mình. Máy đó gọi API đổi mã lấy thông tin kết nối. Nhờ vậy
+/// ứng dụng tại chỗ không cần lưu mật khẩu tài khoản.
+///
+/// `connectorSecretEnc` giữ thông tin kết nối tunnel ở dạng đã mã hoá, chỉ tồn
+/// tại trong lúc chờ ghép: đổi mã xong là xoá ngay. Ai đọc trộm được database
+/// trong khoảng đó cũng không dùng được nếu không có khoá mã hoá.
+model PairingCode {
+  id                 String    @id @default(uuid())
+  tenantId           String    @map("tenant_id")
+  code               String    @unique // mã ngắn cho người dùng gõ tay
+  connectorSecretEnc String?   @map("connector_secret_enc") // đã mã hoá, xoá sau khi ghép
+  expiresAt          DateTime  @map("expires_at")
+  usedAt             DateTime? @map("used_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, usedAt])
+  @@index([expiresAt])
+  @@map("pairing_codes")
+}
+
+/// Một máy tại cửa hàng đã ghép thành công.
+///
+/// `deviceToken` là "thẻ ra vào" lâu dài của máy đó: mọi lần báo còn sống hay
+/// gửi số liệu về sau đều dùng token này thay cho tài khoản người dùng. Gỡ một
+/// máy bị mất chỉ cần xoá bản ghi tương ứng, không ảnh hưởng máy khác.
+model Instance {
+  id                 String    @id @default(uuid())
+  tenantId           String    @map("tenant_id")
+  machineFingerprint String?   @map("machine_fingerprint") // dấu vân máy, để nhận ra máy cũ ghép lại
+  os                 String? // hệ điều hành, phục vụ thống kê
+  appVersion         String?   @map("app_version")
+  deviceToken        String    @unique @map("device_token")
+  lastSeenAt         DateTime? @map("last_seen_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("instances")
+}

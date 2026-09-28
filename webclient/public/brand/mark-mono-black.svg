@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Rabit Spa mark, monochrome black">
+  <title>Rabit Spa — mark (mono đen)</title>
+  <g fill="#1A1310">
+    <path d="M50 47
+             C60 47 67 55 67 66
+             C67 78 59 86 49 86
+             C39 86 32 78 32 67
+             C32 55 40 47 50 47 Z"/>
+    <ellipse cx="0" cy="0" rx="6.5" ry="27" transform="translate(35,33) rotate(-24)"/>
+    <ellipse cx="0" cy="0" rx="6" ry="19" transform="translate(65,42) rotate(21)"/>
+  </g>
+</svg>

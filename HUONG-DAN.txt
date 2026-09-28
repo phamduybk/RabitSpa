@@ -1,0 +1,176 @@
+================================================================
+  RabitSpa — bản chạy trên máy của bạn
+================================================================
+
+  HƯỚNG DẪN ĐẦY ĐỦ (luôn là bản mới nhất):
+      https://rabitspa.com/huong-dan
+
+  File này chỉ tóm tắt những việc cần làm ngay khi mới cài.
+
+Phần mềm này chạy ngay trên máy bạn. Dữ liệu nằm trong thư mục
+này, không gửi đi đâu cả. Không cần Internet để dùng hằng ngày.
+
+
+----------------------------------------------------------------
+1. KHỞI ĐỘNG
+----------------------------------------------------------------
+
+  Windows   : bấm đúp vào  run.bat
+  macOS/Linux: mở Terminal tại thư mục này rồi gõ:  bash run.sh
+
+Lần đầu chạy mất khoảng nửa phút. Khi thấy dòng
+"Mở trên trình duyệt: http://localhost:8895" là xong — mở địa chỉ
+đó trên trình duyệt.
+
+Muốn dừng: nhấn Ctrl + C trong cửa sổ đang chạy (Windows: đóng các
+cửa sổ RabitSpa-*).
+
+
+----------------------------------------------------------------
+2. ĐĂNG NHẬP LẦN ĐẦU
+----------------------------------------------------------------
+
+      Tài khoản : admin
+      Mật khẩu  : 123456
+
+  >>> ĐỔI MẬT KHẨU NGAY sau khi vào được: Cài đặt > Tài khoản.
+
+Mật khẩu này giống nhau ở mọi bản tải về, nên ai biết cũng đăng
+nhập được nếu bạn để nguyên. Đổi xong là an toàn.
+
+
+----------------------------------------------------------------
+3. DÙNG TRONG CỬA HÀNG (NHIỀU MÁY)
+----------------------------------------------------------------
+
+Máy khác trong cùng mạng WiFi vào được bằng địa chỉ IP của máy
+đang chạy, ví dụ:
+
+      http://192.168.1.10:8895
+
+Xem IP máy mình:
+  Windows : mở Command Prompt, gõ  ipconfig
+  macOS   : Cài đặt hệ thống > Mạng
+  Linux   : gõ  ip addr
+
+Máy đang chạy phần mềm phải bật thì các máy kia mới vào được.
+
+
+----------------------------------------------------------------
+4. TRUY CẬP TỪ XA (NGOÀI CỬA HÀNG)
+----------------------------------------------------------------
+
+Muốn xem từ nhà, từ điện thoại 4G, hay gửi link đặt lịch cho
+khách — bạn cần một địa chỉ công khai. Làm một lần duy nhất:
+
+  Bước 1. Mở https://rabitspa.com/login trên trình duyệt và đăng
+          nhập. Chưa có tài khoản thì đăng ký (dùng Google được).
+
+  Bước 2. Vào mục Link public, bấm "Bật link", rồi bấm
+          "Tạo mã ghép máy". Màn hình hiện một mã ngắn.
+
+  Bước 3. Quay lại máy này, chạy:
+
+              bash run.sh --ghep-may        (macOS/Linux)
+              run.bat --ghep-may            (Windows)
+
+          Gõ mã vừa nhận vào. Xong.
+
+Từ lần sau, mỗi lần khởi động phần mềm sẽ tự kết nối, không phải
+làm gì thêm. Địa chỉ công khai của bạn hiện ngay trên màn hình
+lúc khởi động.
+
+Lưu ý: địa chỉ công khai chỉ hoạt động khi máy này đang bật và
+có mạng — phần mềm chạy ở đây chứ không phải trên máy chủ nào.
+
+Muốn ngừng dùng địa chỉ công khai trên máy này:
+
+      bash run.sh --go-ghep         (Windows: run.bat --go-ghep)
+
+
+----------------------------------------------------------------
+5. TÊN MIỀN RIÊNG CỦA BẠN
+----------------------------------------------------------------
+
+Nếu bạn đã mua tên miền (ví dụ spanhathu.com) và muốn khách vào
+bằng chính tên miền đó:
+
+  1. Đăng nhập https://rabitspa.com, vào mục Tên miền.
+  2. Nhập tên miền của bạn và gửi yêu cầu.
+  3. Vào trang quản lý tên miền nơi bạn mua, thêm một bản ghi
+     CNAME trỏ tên miền đó về địa chỉ mà trang hiển thị.
+  4. Chờ duyệt. Xong là dùng được, thường trong vòng vài phút.
+
+Nếu tên miền của bạn đang dùng Cloudflare, bản ghi phải để chế
+độ "DNS only" (mây xám) thì chứng chỉ bảo mật mới cấp được.
+
+
+----------------------------------------------------------------
+6. SAO LƯU DỮ LIỆU
+----------------------------------------------------------------
+
+Toàn bộ dữ liệu nằm trong:
+
+      backend/rabitspa.db
+
+Sao chép cả thư mục này sang ổ cứng ngoài hoặc dịch vụ lưu trữ
+đám mây là đã sao lưu xong. Nên làm định kỳ — dữ liệu ở máy bạn,
+không ai giữ hộ.
+
+Khôi phục: chép file đó về đúng chỗ cũ (lúc phần mềm đang tắt).
+
+
+----------------------------------------------------------------
+7. KHI GẶP TRỤC TRẶC
+----------------------------------------------------------------
+
+"Không mở được http://localhost:8895"
+      Xem cửa sổ đang chạy có báo lỗi gì không. Thử đóng hẳn rồi
+      chạy lại. Nếu máy có phần mềm khác đang chiếm cổng 8895,
+      đặt cổng khác:  RABITSPA_WEB_PORT=9100 bash run.sh
+
+"Sai tài khoản hoặc mật khẩu"
+      Lần đầu là admin / 123456. Nếu đã đổi mà quên, xoá file
+      backend/rabitspa.db rồi chạy lại — phần mềm tạo lại dữ liệu
+      mẫu, NHƯNG MẤT HẾT dữ liệu đã nhập. Chỉ làm khi chấp nhận điều đó.
+
+"Ghép máy báo mã không dùng được"
+      Mã chỉ sống 10 phút và dùng được một lần. Tạo mã mới trên
+      trang quản lý rồi thử lại.
+
+"Địa chỉ công khai không vào được"
+      Kiểm tra máy này còn bật và còn mạng không. Nếu chủ cửa
+      hàng đã gỡ máy này trên trang quản lý thì phải ghép lại.
+
+Máy chạy Ubuntu mà báo thiếu libatomic.so.1:
+      sudo apt install libatomic1
+
+
+----------------------------------------------------------------
+8. CÂU HỎI HAY GẶP
+----------------------------------------------------------------
+
+Có mất phí không?
+      Không. Phần mềm miễn phí, đầy đủ tính năng, không giới hạn
+      thời gian.
+
+Dữ liệu của tôi có bị gửi đi đâu không?
+      Không. Dữ liệu nằm trong thư mục này trên máy bạn. Chỉ khi
+      bạn tự bật địa chỉ công khai thì khách mới xem được qua
+      Internet — và lúc đó dữ liệu vẫn ở máy bạn, chỉ đi qua
+      đường truyền.
+
+Tắt máy thì sao?
+      Phần mềm dừng, địa chỉ công khai tạm ngưng. Bật máy chạy
+      lại là mọi thứ trở lại như cũ, dữ liệu còn nguyên.
+
+Muốn xem thử trước khi cài?
+      https://demo.rabitspa.com — bản dùng thử công khai, dữ liệu
+      đặt lại mỗi đêm nên cứ thoải mái nghịch.
+
+Mã nguồn ở đâu?
+      https://github.com/phamduybk/RabitSpa
+
+Hướng dẫn chi tiết từng tính năng?
+      https://rabitspa.com/huong-dan — hoặc bấm "Hướng dẫn sử dụng"
+      trong menu tài khoản ngay trong phần mềm.

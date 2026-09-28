@@ -1,0 +1,7 @@
+# Giữ nguyên byte khi tải về: .bat phải xuống dòng kiểu Windows (cmd.exe không
+# chạy đúng nếu bị đổi), .sh phải kiểu Unix (bash báo lỗi khó hiểu nếu bị đổi).
+*.bat -text
+*.sh -text
+*.db binary
+*.node binary
+*.wasm binary

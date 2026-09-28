@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 430 100" role="img" aria-label="Rabit Spa">
+  <title>Rabit Spa — logo ngang, bản màu (nền sáng)</title>
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Sora:wght@800&amp;display=swap');
+      .word { font-family: 'Sora', 'Be Vietnam Pro', system-ui, sans-serif; font-weight: 800; font-size: 46px; letter-spacing: -0.5px; }
+    </style>
+  </defs>
+  <g id="mark">
+    <circle cx="50" cy="50" r="50" fill="#432A41"/>
+    <g fill="#FBF7F3">
+      <path d="M50 47
+               C60 47 67 55 67 66
+               C67 78 59 86 49 86
+               C39 86 32 78 32 67
+               C32 55 40 47 50 47 Z"/>
+      <ellipse cx="0" cy="0" rx="6.5" ry="27" transform="translate(35,33) rotate(-24)"/>
+      <ellipse cx="0" cy="0" rx="6" ry="19" transform="translate(65,42) rotate(21)"/>
+    </g>
+  </g>
+  <text x="118" y="66" class="word"><tspan fill="#432A41">Rabit</tspan><tspan fill="#954A2E" dx="12">Spa</tspan></text>
+</svg>

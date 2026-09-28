@@ -1,0 +1,23 @@
+# Tệp sinh riêng trên từng máy khi chạy — không đưa lên kho phát hành.
+.machine-code
+.secrets.env
+.pairing.json
+cloudflared/config.yml
+cloudflared/credentials.json
+cloudflared/cloudflared
+cloudflared/*.log
+
+# Bộ chạy Node tự tải ở lần chạy đầu (tệp vượt giới hạn 100 MB của GitHub).
+node/
+
+# Dữ liệu thật của cửa hàng. Tệp rabitspa.db MẪU thì có đẩy — nó là dữ liệu
+# khởi tạo; còn các tệp phụ dưới đây sinh ra lúc chạy.
+backend/rabitspa.db-wal
+backend/rabitspa.db-shm
+backend/rabitspa.db.bak*
+backend/rabitspa.seed.db
+uploads/*
+!uploads/.gitkeep
+
+.DS_Store
+*.log

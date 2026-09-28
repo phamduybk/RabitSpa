@@ -1,0 +1,1718 @@
+// Rabit Spa — Prisma schema (multi-tenant SaaS quản lý spa/salon)
+// Mô hình multi-tenant: shared DB, row-level. Mọi bảng nghiệp vụ có tenantId.
+// Tiền tệ: lưu BigInt đơn vị VNĐ (không thập phân). Thời gian: timestamptz (UTC).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// NHÓM HỆ THỐNG SaaS (không thuộc tenant nào)
+// ===========================================================================
+
+/// Loại hình kinh doanh của cửa hàng (chọn khi đăng ký) — ảnh hưởng danh mục mẫu.
+enum BusinessType {
+  SPA // Spa - Thẩm mỹ viện
+  HAIR_SALON // Salon tóc
+  BARBERSHOP // Barbershop
+  NAIL // Tiệm nail
+  MASSAGE // Dịch vụ massage
+  PET_SPA // Spa thú cưng
+  MAKEUP // Dịch vụ trang điểm
+  DENTAL // Nha khoa
+  CLINIC // Phòng khám
+  CAR_SPA // Car spa
+}
+
+/// Trạng thái vòng đời của một tenant (cửa hàng).
+enum TenantStatus {
+  ACTIVE // Đang hoạt động
+  SUSPENDED // Bị khóa (vi phạm / quá hạn thanh toán)
+  EXPIRED // Hết hạn gói (chỉ đọc)
+}
+
+/// Mã gói dịch vụ.
+enum PlanCode {
+  TRIAL
+  GOLD
+  PLATINUM
+  DIAMOND
+}
+
+/// Super Admin — người vận hành nền tảng SaaS (không nằm trong tenant nào).
+model SystemUser {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("system_users")
+}
+
+/// Gói dịch vụ + hạn mức. NULL = không giới hạn.
+model Plan {
+  id                  String   @id @default(uuid()) @db.Uuid
+  code                PlanCode @unique
+  name                String
+  priceMonthly        BigInt   @map("price_monthly") // giá/tháng (VNĐ)
+  priceYearly         BigInt   @map("price_yearly") // giá/năm (VNĐ)
+  maxBranches         Int?     @map("max_branches") // số chi nhánh tối đa
+  maxStaff            Int?     @map("max_staff") // số nhân viên (operator) tối đa
+  maxAccounts         Int?     @map("max_accounts") // số tài khoản đăng nhập tối đa
+  maxCatalogItems     Int?     @map("max_catalog_items") // số dịch vụ + sản phẩm tối đa
+  maxInvoicesPerMonth Int?     @map("max_invoices_per_month") // số hóa đơn/tháng tối đa
+  sortOrder           Int      @default(0) @map("sort_order")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+/// Cửa hàng thuê bao (tenant). Mỗi tenant một subdomain riêng.
+model Tenant {
+  id           String       @id @default(uuid()) @db.Uuid
+  name         String // tên cửa hàng
+  subdomain    String       @unique // tenspa -> tenspa.rabitspa.vn
+  businessType BusinessType @map("business_type")
+  phone        String?
+  address      String?
+  province     String? // tỉnh/thành
+  district     String? // quận/huyện
+  country      String       @default("VN")
+  referralCode String?      @map("referral_code") // mã người giới thiệu (khi đăng ký)
+  status       TenantStatus @default(ACTIVE)
+  timezone     String       @default("Asia/Ho_Chi_Minh")
+  logoUrl      String?      @map("logo_url")
+  // Tên miền riêng do khách hàng tự mua, đã được Super Admin duyệt. Từ round
+  // "public link", việc trỏ ingress KHÔNG còn làm tay: agent relay trên VPS tự
+  // sinh cấu hình Caddy (xem Script/deploy/vps/relay_sync.py). Null = chưa gắn.
+  customDomain String?      @unique @map("custom_domain")
+
+  // ─── Public link (bản tự cài trên máy khách hàng) ───────────────────────
+  // Cửa hàng tải bản cài về chạy ở máy mình; muốn truy cập được từ ngoài thì
+  // đăng nhập tài khoản trung tâm rồi bấm cấp link public. Khi đó hệ thống tạo
+  // riêng cho cửa hàng một Cloudflare Tunnel, trỏ <subdomain>.rabitspa.com vào
+  // đúng máy đó. Null = chưa từng cấp link (vẫn dùng offline bình thường).
+  cfTunnelId    String? @map("cf_tunnel_id") // id tunnel trên Cloudflare
+  cfDnsRecordId String? @map("cf_dns_record_id") // id bản ghi CNAME đã tạo
+  // Cổng mà bản tự cài đang nghe trên máy khách (mặc định 3000) — dùng dựng
+  // ingress "hostname -> http://localhost:<port>".
+  localPort Int @default(3000) @map("local_port")
+
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  subscription      Subscription?
+  domainRequests    DomainRequest[]
+  pairingCodes      PairingCode[]
+  instances         Instance[]
+  branches          Branch[]
+  users             User[]
+  operators         Operator[]
+  customers         Customer[]
+  serviceCategories ServiceCategory[]
+  services          Service[]
+  productCategories ProductCategory[]
+  products          Product[]
+  appointments      Appointment[]
+  invoices          Invoice[]
+  settings          Setting[]
+  counters          TenantCounter[]
+  cardTemplates     CardTemplate[]
+  customerCards     CustomerCard[]
+  commissionRules   CommissionRule[]
+  vouchers          Voucher[]
+  suppliers         Supplier[]
+  customerTags      CustomerTag[]
+  expenses          Expense[]
+  cashBookEntries   CashBookEntry[]
+  stockBatches      StockBatch[]
+  stockTransfers    StockTransfer[]
+  stockChecks       StockCheck[]
+  customerSegments  CustomerSegment[]
+  messageTemplates  MessageTemplate[]
+  campaigns         Campaign[]
+  messageLogs       MessageLog[]
+  loyaltyRules      LoyaltyRule[]
+  loyaltyLedgers    LoyaltyLedger[]
+  ratings           Rating[]
+  resources         Resource[]
+  surveys           Survey[]
+  surveyResponses   SurveyResponse[]
+
+  @@map("tenants")
+}
+
+/// Trạng thái gói thuê bao.
+enum SubscriptionStatus {
+  TRIALING // đang dùng thử
+  ACTIVE // đang trả phí
+  PAST_DUE // quá hạn thanh toán
+  CANCELED // đã hủy
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+/// Thuê bao của tenant với một gói.
+model Subscription {
+  id           String             @id @default(uuid()) @db.Uuid
+  tenantId     String             @unique @map("tenant_id") @db.Uuid
+  planId       String             @map("plan_id") @db.Uuid
+  status       SubscriptionStatus @default(TRIALING)
+  billingCycle BillingCycle       @default(MONTHLY) @map("billing_cycle")
+  startsAt     DateTime           @map("starts_at") @db.Timestamptz
+  endsAt       DateTime           @map("ends_at") @db.Timestamptz // hết hạn / hết trial
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@map("subscriptions")
+}
+
+/// Bộ đếm tự tăng theo tenant (mã hóa đơn, mã khách...). Tăng trong transaction.
+model TenantCounter {
+  tenantId String @map("tenant_id") @db.Uuid
+  key      String // vd: "invoice", "customer"
+  value    Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, key])
+  @@map("tenant_counters")
+}
+
+/// Loại tác nhân thực hiện hành động được ghi audit log.
+enum AuditActorType {
+  SYSTEM_USER // Super Admin
+}
+
+/// Loại đối tượng bị tác động, được ghi audit log.
+enum AuditTargetType {
+  TENANT
+}
+
+/// Hành động Super Admin thực hiện lên tenant, được ghi audit log.
+enum AuditAction {
+  TENANT_LOCK // khóa tenant
+  TENANT_UNLOCK // mở khóa tenant
+  TENANT_CHANGE_PLAN // đổi gói dịch vụ
+  TENANT_CHANGE_STATUS // đổi trạng thái thuê bao (không kèm đổi gói/gia hạn)
+  TENANT_EXTEND_TRIAL // gia hạn thuê bao (extendDays)
+  DOMAIN_REQUEST_APPROVE // duyệt yêu cầu đổi subdomain / gắn custom domain
+  DOMAIN_REQUEST_REJECT // từ chối yêu cầu đổi subdomain / gắn custom domain
+}
+
+/// Nhật ký thao tác của Super Admin lên hệ thống SaaS (không thuộc tenant nào).
+model AuditLog {
+  id         String          @id @default(uuid()) @db.Uuid
+  actorType  AuditActorType  @default(SYSTEM_USER) @map("actor_type")
+  actorId    String          @map("actor_id") @db.Uuid // SystemUser.id
+  action     AuditAction
+  targetType AuditTargetType @default(TENANT) @map("target_type")
+  targetId   String          @map("target_id") @db.Uuid // Tenant.id
+  detail     Json? // dữ liệu chi tiết thao tác (vd: {"from":"GOLD","to":"DIAMOND"})
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([targetType, targetId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ===========================================================================
+// NHÓM TỔ CHỨC TRONG TENANT
+// ===========================================================================
+
+/// Chi nhánh của cửa hàng.
+model Branch {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  name      String
+  address   String?
+  phone     String?
+  isDefault Boolean   @default(false) @map("is_default")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant             Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userRoles          UserRole[]
+  operators          Operator[]
+  appointments       Appointment[]
+  invoices           Invoice[]
+  stockTransfersFrom StockTransfer[] @relation("StockTransferFrom")
+  stockTransfersTo   StockTransfer[] @relation("StockTransferTo")
+  stockChecks        StockCheck[]    @relation("StockCheckBranch")
+  resources          Resource[]
+
+  @@index([tenantId])
+  @@map("branches")
+}
+
+/// Vai trò của người dùng trong tenant, theo từng chi nhánh.
+enum RoleName {
+  OWNER // Chủ spa — toàn quyền
+  MANAGER // Quản lý chi nhánh
+  RECEPTIONIST // Lễ tân / thu ngân
+  TECHNICIAN // Kỹ thuật viên
+  CASHIER // Thu ngân chuyên trách
+  ACCOUNTANT // Kế toán
+}
+
+/// Tài khoản đăng nhập trong tenant (đếm theo max_accounts).
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  email        String
+  /// Nullable: user tạo qua đăng nhập Google có thể chưa từng đặt mật khẩu
+  /// (đăng nhập Google là cách duy nhất cho tới khi tự đặt qua "Quên mật khẩu").
+  passwordHash String?   @map("password_hash")
+  /// Google `sub` (user id) đã liên kết, null nếu chưa từng đăng nhập bằng
+  /// Google. Scope theo tenant (giống email) — không unique toàn cục vì cùng
+  /// 1 người có thể là chủ ở nhiều tenant khác nhau trong tương lai.
+  googleId     String?   @map("google_id")
+  name         String
+  phone        String?
+  isActive     Boolean   @default(true) @map("is_active")
+  tokenVersion Int       @default(0) @map("token_version")
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles          UserRole[]
+  operator       Operator? // liên kết 1-1 nếu tài khoản này cũng là nhân viên phục vụ
+  resetTokens    PasswordResetToken[]
+  domainRequests DomainRequest[] // các yêu cầu đổi subdomain/gắn custom domain do user này gửi
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, googleId])
+  @@index([tenantId])
+  @@map("users")
+}
+
+/// Loại yêu cầu cấu hình tên miền do tenant gửi lên, chờ Super Admin duyệt.
+enum DomainRequestType {
+  SUBDOMAIN // đổi sang subdomain khác dưới *.rabitspa.com (chỉ đổi label, không cần DNS)
+  CUSTOM_DOMAIN // gắn domain riêng khách hàng tự mua, vd spanhathu.com (cần admin cắm ingress + khách trỏ CNAME tay)
+}
+
+/// Trạng thái xét duyệt yêu cầu tên miền.
+enum DomainRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Yêu cầu tenant xin đổi subdomain hoặc gắn custom domain riêng — luôn phải
+/// qua Super Admin duyệt (cả 2 loại). 1 tenant tối đa 1 request PENDING cùng
+/// lúc (kiểm tra ở tầng service), rate-limit 5 request/ngày/tenant.
+model DomainRequest {
+  id                 String              @id @default(uuid()) @db.Uuid
+  tenantId           String              @map("tenant_id") @db.Uuid
+  requestedByUserId  String?             @map("requested_by_user_id") @db.Uuid
+  type               DomainRequestType
+  requestedSubdomain String?             @map("requested_subdomain") // bắt buộc nếu type=SUBDOMAIN
+  customDomain       String?             @map("custom_domain") // bắt buộc nếu type=CUSTOM_DOMAIN
+  reason             String?
+  status             DomainRequestStatus @default(PENDING)
+  // reviewedBy: FK lỏng tới SystemUser.id — KHÔNG đặt quan hệ Prisma trực tiếp
+  // (SystemUser hiện không có relation ngược nào, giữ đơn giản như reviewedBy
+  // của các model audit khác trong hệ thống).
+  reviewedBy         String?             @map("reviewed_by") @db.Uuid
+  reviewNote         String?             @map("review_note") // bắt buộc khi reject
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  reviewedAt         DateTime?           @map("reviewed_at") @db.Timestamptz
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedByUser User?  @relation(fields: [requestedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("domain_requests")
+}
+
+/// Token đặt lại mật khẩu (quên mật khẩu) — một lần dùng, hết hạn sau thời gian
+/// ngắn. Chỉ lưu bản băm SHA-256 của token (không lưu token thô) để nếu lộ DB
+/// cũng không dùng lại được token gửi qua email.
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  usedAt    DateTime? @map("used_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("password_reset_tokens")
+}
+
+/// Gán vai trò cho user tại một chi nhánh (RBAC theo chi nhánh).
+model UserRole {
+  id       String   @id @default(uuid()) @db.Uuid
+  tenantId String   @map("tenant_id") @db.Uuid
+  userId   String   @map("user_id") @db.Uuid
+  branchId String   @map("branch_id") @db.Uuid
+  role     RoleName
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, branchId, role])
+  @@index([tenantId])
+  @@map("user_roles")
+}
+
+/// Cách tính lương cơ bản của nhân viên.
+enum SalaryType {
+  SALARY_BY_HOUR // theo giờ
+  SALARY_BY_DAY // theo ngày
+  SALARY_BY_MONTH // theo tháng
+}
+
+/// Nhân viên / kỹ thuật viên (đếm theo max_staff). Có thể không có tài khoản đăng nhập.
+/// Xuất hiện trên lịch hẹn & dòng hóa đơn để tính hoa hồng, lương.
+model Operator {
+  id                  String     @id @default(uuid()) @db.Uuid
+  tenantId            String     @map("tenant_id") @db.Uuid
+  branchId            String     @map("branch_id") @db.Uuid // chi nhánh chính
+  userId              String?    @unique @map("user_id") @db.Uuid // tài khoản đăng nhập (nếu có)
+  name                String
+  title               String? // chức danh, vd: Stylist
+  level               Int        @default(1) // cấp bậc / nhóm thợ (1..5)
+  phone               String?
+  email               String?
+  avatarUrl           String?    @map("avatar_url")
+  avatarColor         String?    @map("avatar_color") // màu hiển thị trên calendar
+  isGroup             Boolean    @default(false) @map("is_group") // là nhóm nhân viên (chia hoa hồng)
+  showInPublicBooking Boolean    @default(true) @map("show_in_public_booking")
+  basicSalary         BigInt     @default(0) @map("basic_salary")
+  basicSalaryType     SalaryType @default(SALARY_BY_MONTH) @map("basic_salary_type")
+  isActive            Boolean    @default(true) @map("is_active")
+  startDate           DateTime?  @map("start_date") @db.Date
+  deletedAt           DateTime?  @map("deleted_at") @db.Timestamptz
+  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch           Branch            @relation(fields: [branchId], references: [id])
+  user             User?             @relation(fields: [userId], references: [id])
+  appointmentItems AppointmentItem[]
+  timesheets       Timesheet[]
+  stockMovements   StockMovement[]
+  ratings          Rating[]
+
+  @@index([tenantId])
+  @@index([tenantId, branchId])
+  @@map("operators")
+}
+
+/// Chấm công theo ngày của nhân viên.
+model Timesheet {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  operatorId String    @map("operator_id") @db.Uuid
+  date       DateTime  @db.Date
+  checkIn    DateTime? @map("check_in") @db.Timestamptz
+  checkOut   DateTime? @map("check_out") @db.Timestamptz
+  note       String?
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  operator Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+
+  @@unique([operatorId, date])
+  @@index([tenantId, date])
+  @@map("timesheets")
+}
+
+// ===========================================================================
+// KHÁCH HÀNG (CRM)
+// ===========================================================================
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+/// Nguồn khách hàng.
+enum CustomerSource {
+  WALK_IN // khách vãng lai
+  ONLINE // đặt online
+  IMPORT // nhập từ file
+}
+
+/// Hồ sơ khách hàng.
+model Customer {
+  id             String         @id @default(uuid()) @db.Uuid
+  tenantId       String         @map("tenant_id") @db.Uuid
+  code           String // mã KH tự tăng theo tenant, vd CS000001
+  fullName       String         @map("full_name")
+  nameNormalized String?        @map("name_normalized") // họ tên không dấu, chữ thường — phục vụ tìm kiếm bỏ dấu
+  mobile         String // số điện thoại (unique trong tenant)
+  email          String?
+  zalo           String?
+  gender         Gender?
+  avatarColor    String?        @map("avatar_color")
+  address        String?
+  provinceName   String?        @map("province_name")
+  districtName   String?        @map("district_name")
+  dobDate        Int?           @map("dob_date") // ngày sinh (1..31) — tách để lọc sinh nhật
+  dobMonth       Int?           @map("dob_month") // tháng sinh (1..12)
+  dobYear        Int?           @map("dob_year") // năm sinh
+  rank           String         @default("NORMAL") // hạng thành viên
+  loyaltyPoint   Int            @default(0) @map("loyalty_point") // điểm tích lũy
+  debtAmount     BigInt         @default(0) @map("debt_amount") // công nợ (VNĐ)
+  note           String?
+  source         CustomerSource @default(WALK_IN)
+  deletedAt      DateTime?      @map("deleted_at") @db.Timestamptz
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments    Appointment[]
+  invoices        Invoice[]
+  cards           CustomerCard[]
+  notes           CustomerNote[]
+  photos          CustomerPhoto[]
+  tagLinks        CustomerTagLink[]
+  loyaltyLedgers  LoyaltyLedger[]
+  ratings         Rating[]
+  surveyResponses SurveyResponse[]
+
+  @@unique([tenantId, mobile])
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, nameNormalized])
+  @@map("customers")
+}
+
+/// Ghi chú chăm sóc theo dòng thời gian của khách hàng.
+model CustomerNote {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  content    String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, customerId, createdAt])
+  @@map("customer_notes")
+}
+
+/// Ảnh hồ sơ/tiến trình trước-sau của khách hàng.
+model CustomerPhoto {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  dataUrl    String   @map("data_url") @db.Text
+  caption    String?
+  tag        String? // nhãn phân loại: BEFORE (trước) | AFTER (sau) — null = chưa gắn
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, customerId, createdAt])
+  @@map("customer_photos")
+}
+
+/// Nhãn/phân nhóm CRM do từng tenant tự quản lý.
+model CustomerTag {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  color     String   @default("#7656A8")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  links  CustomerTagLink[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("customer_tags")
+}
+
+model CustomerTagLink {
+  customerId String @map("customer_id") @db.Uuid
+  tagId      String @map("tag_id") @db.Uuid
+
+  customer Customer    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tag      CustomerTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([customerId, tagId])
+  @@index([tagId])
+  @@map("customer_tag_links")
+}
+
+// ===========================================================================
+// DANH MỤC DỊCH VỤ / SẢN PHẨM
+// ===========================================================================
+
+/// Nhóm dịch vụ.
+model ServiceCategory {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  name      String
+  sortOrder Int       @default(0) @map("sort_order")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  services Service[]
+
+  @@index([tenantId])
+  @@map("service_categories")
+}
+
+/// Dịch vụ.
+model Service {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  categoryId      String?   @map("category_id") @db.Uuid
+  name            String
+  code            String? // mã dịch vụ (vd DV001) — hiển thị trên POS/danh mục
+  price           BigInt    @default(0) // giá (VNĐ)
+  durationMinutes Int       @default(30) @map("duration_minutes") // thời lượng (phút)
+  description     String?
+  imageUrl        String?   @map("image_url")
+  isActive        Boolean   @default(true) @map("is_active")
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant           Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category         ServiceCategory?     @relation(fields: [categoryId], references: [id])
+  appointmentItems AppointmentItem[]
+  consumptions     ServiceConsumption[]
+
+  @@index([tenantId])
+  @@index([tenantId, categoryId])
+  @@map("services")
+}
+
+/// Nhóm sản phẩm.
+model ProductCategory {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  name      String
+  sortOrder Int       @default(0) @map("sort_order")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@index([tenantId])
+  @@map("product_categories")
+}
+
+/// Sản phẩm bán lẻ tại quầy.
+model Product {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  categoryId String?   @map("category_id") @db.Uuid
+  name       String
+  sku        String? // mã SKU / barcode (dùng làm "mã" hiển thị POS/danh mục)
+  imageUrl   String?   @map("image_url") // ảnh sản phẩm (thumbnail POS/danh mục)
+  unit       String? // đơn vị tính
+  price      BigInt    @default(0) // giá bán (VNĐ)
+  costPrice  BigInt    @default(0) @map("cost_price") // giá vốn (VNĐ)
+  isActive   Boolean   @default(true) @map("is_active")
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category      ProductCategory?     @relation(fields: [categoryId], references: [id])
+  stocks        InventoryStock[]
+  movements     StockMovement[]
+  consumedBy    ServiceConsumption[]
+  batches       StockBatch[]
+  transferItems StockTransferItem[]
+  checkItems    StockCheckItem[]
+
+  @@index([tenantId])
+  @@index([tenantId, categoryId])
+  @@map("products")
+}
+
+/// Nhà cung cấp (mua hàng nhập kho).
+model Supplier {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  name      String
+  phone     String?
+  address   String?
+  note      String?
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  batches StockBatch[]
+
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+/// Định mức tiêu hao nguyên liệu (sản phẩm) cho mỗi dịch vụ.
+/// Khi bán dịch vụ, tự trừ kho các nguyên liệu này.
+model ServiceConsumption {
+  id        String @id @default(uuid()) @db.Uuid
+  tenantId  String @map("tenant_id") @db.Uuid
+  serviceId String @map("service_id") @db.Uuid
+  productId String @map("product_id") @db.Uuid
+  quantity  Int    @default(1)
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, productId])
+  @@index([tenantId])
+  @@map("service_consumptions")
+}
+
+/// Loại biến động kho.
+enum StockMovementType {
+  PURCHASE // nhập kho
+  SALE // xuất bán
+  RETURN // hoàn kho khi hủy hóa đơn
+  ADJUST // điều chỉnh / kiểm kê
+  TRANSFER // chuyển kho
+}
+
+/// Tồn kho hiện tại theo sản phẩm × chi nhánh.
+model InventoryStock {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  quantity  Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, branchId])
+  @@index([tenantId])
+  @@map("inventory_stocks")
+}
+
+/// Lịch sử biến động kho (nhập/xuất/điều chỉnh).
+model StockMovement {
+  id         String            @id @default(uuid()) @db.Uuid
+  tenantId   String            @map("tenant_id") @db.Uuid
+  productId  String            @map("product_id") @db.Uuid
+  branchId   String            @map("branch_id") @db.Uuid
+  type       StockMovementType
+  quantity   Int // dương = nhập, âm = xuất
+  costPrice  BigInt            @default(0) @map("cost_price") // giá nhập (khi PURCHASE)
+  operatorId String?           @map("operator_id") @db.Uuid // nhân viên thực hiện (nullable — data cũ chưa gán)
+  batchId    String?           @map("batch_id") @db.Uuid // lô hàng liên quan (nullable — không bắt buộc gắn lô)
+  note       String?
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
+
+  product  Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  operator Operator?   @relation(fields: [operatorId], references: [id])
+  batch    StockBatch? @relation(fields: [batchId], references: [id])
+
+  @@index([tenantId, productId])
+  @@index([tenantId, operatorId])
+  @@index([tenantId, batchId])
+  @@index([tenantId, createdAt]) // báo cáo Nhập-Xuất kho lọc theo khoảng ngày (inventory-reports.service movements())
+  @@map("stock_movements")
+}
+
+/// Lô hàng nhập kho (batch/lot) — theo dõi tồn theo lô: số lô, HSD, SL còn, giá vốn.
+/// Chỉ THÊM (non-breaking): bảng mới, không ảnh hưởng luồng tồn kho hiện tại.
+model StockBatch {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  productId         String    @map("product_id") @db.Uuid
+  branchId          String?   @map("branch_id") @db.Uuid // chi nhánh nhập (nullable)
+  supplierId        String?   @map("supplier_id") @db.Uuid // nhà cung cấp (nullable)
+  batchNo           String    @map("batch_no") // số lô / lot no
+  expiryDate        DateTime? @map("expiry_date") @db.Date // hạn sử dụng (nullable)
+  quantityIn        Int       @default(0) @map("quantity_in") // SL nhập ban đầu
+  quantityRemaining Int       @default(0) @map("quantity_remaining") // SL còn lại của lô
+  costPrice         BigInt    @default(0) @map("cost_price") // giá vốn / đơn vị (VNĐ)
+  note              String?
+  receivedAt        DateTime  @default(now()) @map("received_at") @db.Timestamptz // ngày nhập lô
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product   Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier  Supplier?       @relation(fields: [supplierId], references: [id])
+  movements StockMovement[]
+
+  @@index([tenantId, productId])
+  @@index([tenantId, expiryDate])
+  @@map("stock_batches")
+}
+
+/// Trạng thái phiếu kho (chuyển kho / kiểm kho).
+/// PENDING = chờ duyệt (chưa tác động tồn); APPROVED = đã duyệt (đã sinh movement); CANCELED = hủy.
+enum StockDocStatus {
+  PENDING
+  APPROVED
+  CANCELED
+}
+
+/// Phiếu CHUYỂN KHO giữa 2 chi nhánh (Round 16).
+/// Chỉ THÊM (non-breaking). Khi duyệt → sinh 2 stock_movements (TRANSFER: xuất nguồn + nhập đích)
+/// nguyên tử, cập nhật tồn 2 chi nhánh. Ở trạng thái PENDING KHÔNG tác động tồn.
+model StockTransfer {
+  id            String         @id @default(uuid()) @db.Uuid
+  tenantId      String         @map("tenant_id") @db.Uuid
+  code          String // mã phiếu, vd CK000001
+  fromBranchId  String         @map("from_branch_id") @db.Uuid // chi nhánh nguồn (xuất)
+  toBranchId    String         @map("to_branch_id") @db.Uuid // chi nhánh đích (nhập)
+  status        StockDocStatus @default(PENDING)
+  note          String?
+  createdById   String?        @map("created_by_id") @db.Uuid // userId người tạo (snapshot, không FK)
+  createdByName String?        @map("created_by_name") // tên người tạo (snapshot)
+  approvedById  String?        @map("approved_by_id") @db.Uuid // userId người duyệt (snapshot)
+  approvedAt    DateTime?      @map("approved_at") @db.Timestamptz
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant     Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fromBranch Branch              @relation("StockTransferFrom", fields: [fromBranchId], references: [id])
+  toBranch   Branch              @relation("StockTransferTo", fields: [toBranchId], references: [id])
+  items      StockTransferItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("stock_transfers")
+}
+
+/// Dòng sản phẩm trong phiếu chuyển kho.
+model StockTransferItem {
+  id         String @id @default(uuid()) @db.Uuid
+  transferId String @map("transfer_id") @db.Uuid
+  productId  String @map("product_id") @db.Uuid
+  quantity   Int // số lượng chuyển (dương)
+
+  transfer StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product       @relation(fields: [productId], references: [id])
+
+  @@index([transferId])
+  @@map("stock_transfer_items")
+}
+
+/// Phiếu KIỂM KHO / điều chỉnh tồn (Round 16).
+/// Chỉ THÊM (non-breaking). Khi duyệt → sinh stock_movements(ADJUST) bù chênh lệch (thực tế − hệ thống)
+/// cho từng dòng có chênh lệch, cập nhật tồn. Ở trạng thái PENDING KHÔNG tác động tồn.
+model StockCheck {
+  id            String         @id @default(uuid()) @db.Uuid
+  tenantId      String         @map("tenant_id") @db.Uuid
+  code          String // mã phiếu, vd KK000001
+  branchId      String         @map("branch_id") @db.Uuid // chi nhánh kiểm kho
+  status        StockDocStatus @default(PENDING)
+  note          String?
+  createdById   String?        @map("created_by_id") @db.Uuid
+  createdByName String?        @map("created_by_name")
+  approvedById  String?        @map("approved_by_id") @db.Uuid
+  approvedAt    DateTime?      @map("approved_at") @db.Timestamptz
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch           @relation("StockCheckBranch", fields: [branchId], references: [id])
+  items  StockCheckItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("stock_checks")
+}
+
+/// Dòng sản phẩm trong phiếu kiểm kho (tồn hệ thống lúc lập + tồn thực tế kiểm đếm).
+model StockCheckItem {
+  id        String @id @default(uuid()) @db.Uuid
+  checkId   String @map("check_id") @db.Uuid
+  productId String @map("product_id") @db.Uuid
+  systemQty Int    @map("system_qty") // tồn hệ thống lúc lập phiếu (snapshot)
+  actualQty Int    @map("actual_qty") // tồn thực tế kiểm đếm
+
+  check   StockCheck @relation(fields: [checkId], references: [id], onDelete: Cascade)
+  product Product    @relation(fields: [productId], references: [id])
+
+  @@index([checkId])
+  @@map("stock_check_items")
+}
+
+// ===========================================================================
+// LỊCH HẸN
+// ===========================================================================
+
+/// Trạng thái lịch hẹn (máy trạng thái).
+enum AppointmentStatus {
+  UNCONFIRMED // chưa xác nhận
+  CONFIRMED // đã xác nhận
+  CHECKED_IN // khách đã đến (chờ phục vụ)
+  IN_SERVICE // đang phục vụ
+  COMPLETED // hoàn thành
+  CANCELED // hủy
+  NO_SHOW // không đến
+}
+
+enum AppointmentSource {
+  STAFF // nhân viên tạo
+  ONLINE // khách đặt online
+  PHONE // khách gọi điện
+  WALK_IN // khách đến trực tiếp
+  ZALO
+  FACEBOOK
+  INSTAGRAM
+  OTHER
+}
+
+/// Loại tài nguyên vật lý phục vụ (giường / ghế / phòng).
+enum ResourceType {
+  BED // giường
+  CHAIR // ghế
+  ROOM // phòng
+}
+
+/// Tài nguyên vật lý (giường/ghế/phòng) theo chi nhánh — dùng cho sơ đồ giường/ghế.
+model Resource {
+  id         String       @id @default(uuid()) @db.Uuid
+  tenantId   String       @map("tenant_id") @db.Uuid
+  branchId   String       @map("branch_id") @db.Uuid
+  name       String
+  type       ResourceType @default(BED)
+  orderIndex Int          @default(0) @map("order_index")
+  active     Boolean      @default(true)
+  deletedAt  DateTime?    @map("deleted_at") @db.Timestamptz
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch       Branch        @relation(fields: [branchId], references: [id])
+  appointments Appointment[]
+
+  @@index([tenantId, branchId])
+  @@map("resources")
+}
+
+/// Lịch hẹn.
+model Appointment {
+  id              String            @id @default(uuid()) @db.Uuid
+  tenantId        String            @map("tenant_id") @db.Uuid
+  branchId        String            @map("branch_id") @db.Uuid
+  customerId      String?           @map("customer_id") @db.Uuid
+  code            String // mã lịch hẹn theo tenant
+  status          AppointmentStatus @default(UNCONFIRMED)
+  startAt         DateTime          @map("start_at") @db.Timestamptz
+  endAt           DateTime          @map("end_at") @db.Timestamptz
+  note            String?
+  source          AppointmentSource @default(STAFF)
+  guestCount      Int               @default(1) @map("guest_count")
+  resourceName    String?           @map("resource_name")
+  resourceId      String?           @map("resource_id") @db.Uuid
+  canceledReason  String?           @map("canceled_reason")
+  reminderSentAt  DateTime?         @map("reminder_sent_at") @db.Timestamptz
+  reminderChannel String?           @map("reminder_channel")
+  deletedAt       DateTime?         @map("deleted_at") @db.Timestamptz
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch   Branch            @relation(fields: [branchId], references: [id])
+  customer Customer?         @relation(fields: [customerId], references: [id])
+  resource Resource?         @relation(fields: [resourceId], references: [id])
+  items    AppointmentItem[]
+  invoice  Invoice?
+
+  @@unique([tenantId, code])
+  @@index([tenantId, branchId, startAt])
+  @@index([tenantId, status])
+  @@map("appointments")
+}
+
+/// Một dịch vụ trong lịch hẹn, gán kỹ thuật viên phục vụ.
+model AppointmentItem {
+  id              String   @id @default(uuid()) @db.Uuid
+  appointmentId   String   @map("appointment_id") @db.Uuid
+  serviceId       String   @map("service_id") @db.Uuid
+  operatorId      String?  @map("operator_id") @db.Uuid // kỹ thuật viên phục vụ
+  durationMinutes Int      @map("duration_minutes")
+  priceSnapshot   BigInt   @map("price_snapshot")
+  startAt         DateTime @map("start_at") @db.Timestamptz
+  endAt           DateTime @map("end_at") @db.Timestamptz
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  service     Service     @relation(fields: [serviceId], references: [id])
+  operator    Operator?   @relation(fields: [operatorId], references: [id])
+
+  @@index([appointmentId])
+  @@index([operatorId, startAt])
+  @@map("appointment_items")
+}
+
+// ===========================================================================
+// HÓA ĐƠN & THANH TOÁN (POS)
+// ===========================================================================
+
+enum DiscountType {
+  PERCENT // giảm theo %
+  AMOUNT // giảm số tiền cố định
+}
+
+enum InvoiceStatus {
+  DRAFT // nháp
+  PENDING // đơn chờ (park)
+  PAID // đã thanh toán đủ
+  PARTIALLY_PAID // thanh toán một phần (còn nợ)
+  CANCELED // đã hủy
+}
+
+enum InvoiceItemType {
+  SERVICE
+  PRODUCT
+}
+
+enum PaymentMethod {
+  CASH // tiền mặt
+  BANK_TRANSFER // chuyển khoản
+  CARD // quẹt thẻ ngân hàng
+  MONEY_CARD // trừ số dư thẻ tiền (thẻ trả trước) của khách
+}
+
+/// Hóa đơn.
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  tenantId       String        @map("tenant_id") @db.Uuid
+  branchId       String        @map("branch_id") @db.Uuid
+  customerId     String?       @map("customer_id") @db.Uuid // null = khách lẻ
+  appointmentId  String?       @unique @map("appointment_id") @db.Uuid
+  voucherId      String?       @map("voucher_id") @db.Uuid
+  code           String // mã hóa đơn tự tăng theo tenant, vd INV000001
+  idempotencyKey String?       @map("idempotency_key") @db.Uuid
+  requestHash    String?       @map("request_hash")
+  status         InvoiceStatus @default(DRAFT)
+  subtotal       BigInt        @default(0) // tổng trước giảm giá
+  discountType   DiscountType? @map("discount_type")
+  discountValue  BigInt        @default(0) @map("discount_value")
+  tipAmount      BigInt        @default(0) @map("tip_amount")
+  taxAmount      BigInt        @default(0) @map("tax_amount")
+  serviceCharge  BigInt        @default(0) @map("service_charge")
+  loyaltyAwarded Int           @default(0) @map("loyalty_awarded")
+  total          BigInt        @default(0) // tổng phải trả
+  paidAmount     BigInt        @default(0) @map("paid_amount")
+  debtAmount     BigInt        @default(0) @map("debt_amount") // = total - paidAmount
+  note           String?
+  createdById    String?       @map("created_by_id") @db.Uuid
+  canceledById   String?       @map("canceled_by_id") @db.Uuid
+  canceledReason String?       @map("canceled_reason")
+  paidAt         DateTime?     @map("paid_at") @db.Timestamptz
+  deletedAt      DateTime?     @map("deleted_at") @db.Timestamptz
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch           @relation(fields: [branchId], references: [id])
+  customer    Customer?        @relation(fields: [customerId], references: [id])
+  appointment Appointment?     @relation(fields: [appointmentId], references: [id])
+  voucher     Voucher?         @relation(fields: [voucherId], references: [id])
+  items       InvoiceItem[]
+  payments    Payment[]
+  feedback    InvoiceFeedback?
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@index([voucherId])
+  @@index([tenantId, customerId, createdAt]) // lịch sử/công nợ theo khách (customers.history, reports.customerDebt)
+  @@index([tenantId, branchId, createdAt]) // báo cáo lọc theo chi nhánh + khoảng ngày (reports.service invRevenueWhere)
+  @@map("invoices")
+}
+
+/// Đánh giá sau dịch vụ gắn với hóa đơn để tránh đánh giá trùng.
+model InvoiceFeedback {
+  id        String   @id @default(uuid()) @db.Uuid
+  invoiceId String   @unique @map("invoice_id") @db.Uuid
+  score     Int
+  comment   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_feedback")
+}
+
+/// Dòng hóa đơn (dịch vụ hoặc sản phẩm). Gán 4 vai trò nhân viên để tính hoa hồng.
+model InvoiceItem {
+  id             String          @id @default(uuid()) @db.Uuid
+  invoiceId      String          @map("invoice_id") @db.Uuid
+  itemType       InvoiceItemType @map("item_type")
+  refId          String?         @map("ref_id") @db.Uuid // serviceId hoặc productId
+  nameSnapshot   String          @map("name_snapshot")
+  priceSnapshot  BigInt          @map("price_snapshot")
+  quantity       Int             @default(1)
+  discount       BigInt          @default(0)
+  serverId       String?         @map("server_id") @db.Uuid // N.V phục vụ
+  sellerId       String?         @map("seller_id") @db.Uuid // N.V bán hàng
+  consultantId   String?         @map("consultant_id") @db.Uuid // N.V tư vấn
+  referralSource String?         @map("referral_source") // nguồn giới thiệu
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([serverId])
+  @@index([sellerId])
+  @@index([consultantId])
+  @@map("invoice_items")
+}
+
+/// Thanh toán cho hóa đơn (một hóa đơn có thể có nhiều lần / nhiều phương thức).
+model Payment {
+  id        String        @id @default(uuid()) @db.Uuid
+  invoiceId String        @map("invoice_id") @db.Uuid
+  cashierId String?       @map("cashier_id") @db.Uuid // thu ngân nhận tiền (User); gán lúc checkout
+  method    PaymentMethod
+  amount    BigInt
+  isRefund  Boolean       @default(false) @map("is_refund")
+  note      String?
+  paidAt    DateTime      @default(now()) @map("paid_at") @db.Timestamptz
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([cashierId])
+  @@index([paidAt]) // lọc theo khoảng ngày thu tiền — dùng trong hầu hết báo cáo (revenue/daily/summary/cashflow/dashboard)
+  @@map("payments")
+}
+
+/// Loại giao dịch trong sổ quỹ tiền mặt.
+enum CashFlowType {
+  THU // Phiếu thu (tiền vào quỹ)
+  CHI // Phiếu chi (tiền ra quỹ)
+}
+
+/// Sổ quỹ thu/chi tiền mặt: ghi các khoản thu/chi ngoài bán hàng
+/// (nộp quỹ, rút quỹ, chi phí, hoàn tiền...) để theo dõi số dư quỹ.
+model CashBookEntry {
+  id           String       @id @default(uuid()) @db.Uuid
+  tenantId     String       @map("tenant_id") @db.Uuid
+  branchId     String?      @map("branch_id") @db.Uuid
+  code         String // mã phiếu tự tăng theo tenant, vd CQ000001
+  type         CashFlowType
+  amount       BigInt // số tiền nguyên VNĐ (luôn dương)
+  category     String // nhãn: nộp quỹ / rút quỹ / chi phí / hoàn tiền / khác
+  note         String?
+  refInvoiceId String?      @map("ref_invoice_id") @db.Uuid // liên kết hóa đơn (nếu có)
+  createdById  String?      @map("created_by_id") @db.Uuid // người lập phiếu
+  occurredAt   DateTime     @default(now()) @map("occurred_at") @db.Timestamptz
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, type])
+  @@map("cashbook_entries")
+}
+
+/// Khoản chi vận hành của cửa hàng, dùng cho sổ quỹ và báo cáo dòng tiền.
+model Expense {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  branchId   String?  @map("branch_id") @db.Uuid
+  category   String
+  amount     BigInt
+  note       String?
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, occurredAt])
+  @@map("expenses")
+}
+
+// ===========================================================================
+// CÀI ĐẶT & KHÁC
+// ===========================================================================
+
+/// Cấu hình key-value theo tenant (thuế, phí phục vụ, tip, loyalty, mã đơn...).
+model Setting {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  key       String
+  valueJson Json     @map("value_json")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, key])
+  @@map("settings")
+}
+
+/// Dữ liệu hành chính VN (bảng chung).
+model Province {
+  code      String     @id
+  name      String
+  districts District[]
+
+  @@map("provinces")
+}
+
+model District {
+  code         String @id
+  name         String
+  provinceCode String @map("province_code")
+
+  province Province @relation(fields: [provinceCode], references: [code])
+
+  @@index([provinceCode])
+  @@map("districts")
+}
+
+// ===========================================================================
+// THẺ DỊCH VỤ & LIỆU TRÌNH
+// ===========================================================================
+
+/// Loại thẻ: PREPAID = thẻ trả trước (giá trị tiền); PACKAGE = thẻ liệu trình (số buổi).
+enum CardType {
+  PREPAID
+  PACKAGE
+}
+
+enum CardStatus {
+  ACTIVE // còn hiệu lực
+  USED // đã dùng hết
+  EXPIRED // hết hạn
+  FROZEN // tạm khóa
+}
+
+/// Loại giao dịch thẻ.
+enum CardTxnType {
+  ISSUE // phát hành
+  REDEEM // sử dụng (trừ tiền/buổi)
+  REFUND // hoàn
+  EXTEND // gia hạn
+  ADJUST // điều chỉnh
+}
+
+/// Mẫu thẻ (định nghĩa gói thẻ để bán).
+model CardTemplate {
+  id            String    @id @default(uuid()) @db.Uuid
+  tenantId      String    @map("tenant_id") @db.Uuid
+  type          CardType
+  name          String
+  price         BigInt // giá bán thẻ (VNĐ)
+  faceValue     BigInt    @default(0) @map("face_value") // PREPAID: giá trị nạp vào thẻ
+  bonusValue    BigInt    @default(0) @map("bonus_value") // PREPAID: khuyến mãi thêm
+  serviceId     String?   @map("service_id") @db.Uuid // PACKAGE: dịch vụ áp dụng
+  totalSessions Int       @default(0) @map("total_sessions") // PACKAGE: tổng số buổi
+  validityDays  Int       @default(365) @map("validity_days") // số ngày hiệu lực
+  isActive      Boolean   @default(true) @map("is_active")
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cards  CustomerCard[]
+
+  @@index([tenantId])
+  @@map("card_templates")
+}
+
+/// Thẻ đã phát hành cho khách hàng.
+model CustomerCard {
+  id                String     @id @default(uuid()) @db.Uuid
+  tenantId          String     @map("tenant_id") @db.Uuid
+  customerId        String     @map("customer_id") @db.Uuid
+  templateId        String     @map("template_id") @db.Uuid
+  code              String // mã thẻ theo tenant
+  type              CardType
+  status            CardStatus @default(ACTIVE)
+  remainingValue    BigInt     @default(0) @map("remaining_value") // PREPAID: tiền còn lại
+  remainingSessions Int        @default(0) @map("remaining_sessions") // PACKAGE: buổi còn lại
+  issuedAt          DateTime   @default(now()) @map("issued_at") @db.Timestamptz
+  expiresAt         DateTime   @map("expires_at") @db.Timestamptz
+  createdAt         DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer          @relation(fields: [customerId], references: [id])
+  template     CardTemplate      @relation(fields: [templateId], references: [id])
+  transactions CardTransaction[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, customerId])
+  @@map("customer_cards")
+}
+
+/// Voucher / mã giảm giá.
+model Voucher {
+  id            String       @id @default(uuid()) @db.Uuid
+  tenantId      String       @map("tenant_id") @db.Uuid
+  code          String // mã voucher (khách nhập tại POS)
+  name          String
+  discountType  DiscountType @map("discount_type") // PERCENT | AMOUNT
+  discountValue BigInt       @map("discount_value")
+  maxDiscount   BigInt       @default(0) @map("max_discount") // trần giảm khi PERCENT (0 = không trần)
+  minOrder      BigInt       @default(0) @map("min_order") // đơn tối thiểu để áp dụng
+  totalQuantity Int?         @map("total_quantity") // tổng lượt dùng (null = không giới hạn)
+  usedCount     Int          @default(0) @map("used_count")
+  expiresAt     DateTime?    @map("expires_at") @db.Timestamptz
+  isActive      Boolean      @default(true) @map("is_active")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("vouchers")
+}
+
+// ===========================================================================
+// HOA HỒNG NHÂN VIÊN
+// ===========================================================================
+
+/// Vai trò nhận hoa hồng trên dòng hóa đơn.
+enum CommissionRole {
+  SERVER // nhân viên phục vụ
+  CONSULTANT // nhân viên tư vấn
+  SELLER // nhân viên bán hàng
+}
+
+/// Phạm vi áp dụng quy tắc.
+enum CommissionScope {
+  ALL // mọi mặt hàng
+  SERVICE // chỉ dịch vụ
+  PRODUCT // chỉ sản phẩm
+}
+
+enum CommissionValueType {
+  PERCENT // theo %
+  FIXED // số tiền cố định (VNĐ)
+}
+
+/// Quy tắc tính hoa hồng. refId != null = quy tắc riêng cho 1 dịch vụ/sản phẩm.
+model CommissionRule {
+  id        String              @id @default(uuid()) @db.Uuid
+  tenantId  String              @map("tenant_id") @db.Uuid
+  role      CommissionRole
+  scope     CommissionScope     @default(ALL)
+  refId     String?             @map("ref_id") @db.Uuid // dịch vụ/sản phẩm cụ thể
+  valueType CommissionValueType @default(PERCENT) @map("value_type")
+  value     BigInt // PERCENT: 1-100 ; FIXED: VNĐ
+  isActive  Boolean             @default(true) @map("is_active")
+  createdAt DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime            @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("commission_rules")
+}
+
+/// Lịch sử giao dịch của thẻ.
+model CardTransaction {
+  id             String      @id @default(uuid()) @db.Uuid
+  tenantId       String      @map("tenant_id") @db.Uuid
+  customerCardId String      @map("customer_card_id") @db.Uuid
+  invoiceId      String?     @map("invoice_id") @db.Uuid // hóa đơn gắn giao dịch trừ thẻ (nếu phát sinh qua POS)
+  type           CardTxnType
+  valueDelta     BigInt      @default(0) @map("value_delta") // thay đổi tiền (âm khi trừ)
+  sessionDelta   Int         @default(0) @map("session_delta") // thay đổi buổi (âm khi trừ)
+  note           String?
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  card CustomerCard @relation(fields: [customerCardId], references: [id], onDelete: Cascade)
+
+  @@index([customerCardId])
+  @@index([invoiceId])
+  @@index([tenantId, type, createdAt]) // reports.service summary()/daily() lọc REDEEM theo tenantId+khoảng ngày — trước đây KHÔNG có index nào theo tenantId trên bảng này
+  @@map("card_transactions")
+}
+
+// ===========================================================================
+// MARKETING — Chăm sóc khách hàng qua SMS / Zalo OA (ZNS)
+// Round 13 (P3): quản lý nhóm khách (segment) · mẫu tin · chiến dịch · lịch sử gửi.
+// LƯU Ý: việc GỬI THẬT cần cổng ngoài (SMS provider / Zalo OA token) — hiện dùng
+// STUB (ghi MessageLog, đánh dấu đã gửi, ước tính chi phí; KHÔNG gọi mạng ngoài).
+// ===========================================================================
+
+/// Kênh gửi tin marketing.
+enum MessageChannel {
+  SMS // SMS brandname
+  ZALO // Zalo OA / ZNS
+}
+
+/// Trạng thái vòng đời của một chiến dịch.
+enum CampaignStatus {
+  DRAFT // nháp — đang soạn, chưa gửi
+  SCHEDULED // đã lên lịch gửi
+  SENT // đã gửi (stub)
+}
+
+/// Trạng thái gửi của từng tin trong lịch sử.
+enum MessageStatus {
+  SENT // đã gửi (stub thành công)
+  FAILED // gửi thất bại (stub — vd thiếu SĐT/Zalo)
+}
+
+/// Nhóm / phân khúc khách hàng — tiêu chí lọc lưu dạng JSON (hạng, sinh nhật,
+/// công nợ, chưa ghé N ngày, nguồn, giới tính). Dùng để chọn người nhận chiến dịch.
+model CustomerSegment {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String
+  description String?
+  criteria    Json     @default("{}") @map("criteria") // { rank?, hasBirthdayThisMonth?, hasDebt?, notVisitedDays?, source?, gender? }
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@index([tenantId])
+  @@map("customer_segments")
+}
+
+/// Mẫu tin nhắn (SMS/Zalo). Nội dung chứa biến {ten_khach}, {ma_kh}, {sdt},
+/// {hang}, {diem}, {cong_no}, {ten_spa} — render theo từng khách khi gửi.
+model MessageTemplate {
+  id        String         @id @default(uuid()) @db.Uuid
+  tenantId  String         @map("tenant_id") @db.Uuid
+  channel   MessageChannel
+  name      String
+  content   String         @db.Text
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaigns Campaign[]
+
+  @@index([tenantId])
+  @@map("message_templates")
+}
+
+/// Chiến dịch gửi tin: chọn kênh + nhóm nhận (segment) + mẫu tin, ước tính chi phí,
+/// gửi (stub) → sinh MessageLog cho từng khách trong nhóm.
+model Campaign {
+  id             String         @id @default(uuid()) @db.Uuid
+  tenantId       String         @map("tenant_id") @db.Uuid
+  code           String // mã chiến dịch tự tăng theo tenant, vd CP000001
+  name           String
+  channel        MessageChannel
+  segmentId      String?        @map("segment_id") @db.Uuid
+  templateId     String?        @map("template_id") @db.Uuid
+  status         CampaignStatus @default(DRAFT)
+  scheduledAt    DateTime?      @map("scheduled_at") @db.Timestamptz // thời điểm dự kiến gửi
+  sentAt         DateTime?      @map("sent_at") @db.Timestamptz // thời điểm gửi thực (stub)
+  recipientCount Int            @default(0) @map("recipient_count") // số khách nhận (chốt lúc gửi)
+  messageCount   Int            @default(0) @map("message_count") // tổng số tin (tính phân mảnh SMS)
+  estimatedCost  BigInt         @default(0) @map("estimated_cost") // chi phí ước tính (VNĐ)
+  createdById    String?        @map("created_by_id") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  segment  CustomerSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  template MessageTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  logs     MessageLog[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("campaigns")
+}
+
+/// Lịch sử gửi từng tin (một dòng / khách / lần gửi). content = nội dung đã render.
+model MessageLog {
+  id           String         @id @default(uuid()) @db.Uuid
+  tenantId     String         @map("tenant_id") @db.Uuid
+  campaignId   String?        @map("campaign_id") @db.Uuid
+  customerId   String?        @map("customer_id") @db.Uuid
+  customerName String         @map("customer_name") // snapshot tên khách lúc gửi
+  recipient    String // SĐT (SMS) hoặc Zalo id lúc gửi
+  channel      MessageChannel
+  content      String         @db.Text // nội dung đã render theo khách
+  status       MessageStatus  @default(SENT)
+  cost         BigInt         @default(0) // chi phí tin này (VNĐ)
+  messageParts Int            @default(1) @map("message_parts") // số mảnh SMS của tin
+  error        String? // lý do FAILED (stub)
+  sentAt       DateTime       @default(now()) @map("sent_at") @db.Timestamptz
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, sentAt])
+  @@index([tenantId, campaignId])
+  @@map("message_logs")
+}
+
+// ============================================================================
+// LOYALTY (điểm tích lũy) — Round 17. Chỉ THÊM bảng, không sửa luồng cũ.
+// ============================================================================
+
+/// Loại giao dịch điểm: EARN cộng khi mua, REDEEM khi đổi điểm→tiền,
+/// ADJUST điều chỉnh thủ công hoặc hoàn/hủy hóa đơn.
+enum LoyaltyTxnType {
+  EARN
+  REDEEM
+  ADJUST
+}
+
+/// Quy tắc tích/đổi điểm theo tenant. Có thể có nhiều quy tắc nhưng chỉ 1 active.
+/// amountPerPoint đ chi tiêu = pointPerUnit điểm; redeemPointValue = giá trị 1 điểm khi đổi (VNĐ).
+model LoyaltyRule {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  name             String   @default("Quy tắc mặc định")
+  active           Boolean  @default(true)
+  amountPerPoint   BigInt   @default(100000) @map("amount_per_point") // số tiền chi tiêu cho mỗi mốc tích điểm
+  pointPerUnit     Int      @default(1) @map("point_per_unit") // số điểm cộng cho mỗi mốc
+  redeemPointValue BigInt   @default(1000) @map("redeem_point_value") // giá trị quy đổi 1 điểm (VNĐ)
+  minRedeemPoint   Int      @default(0) @map("min_redeem_point") // số điểm tối thiểu mỗi lần đổi
+  expiryDays       Int?     @map("expiry_days") // hạn dùng điểm (ngày), null = không hết hạn
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, active])
+  @@map("loyalty_rules")
+}
+
+/// Sổ cái giao dịch điểm — append-only, phản ánh trung thực mọi thay đổi
+/// của Customer.loyaltyPoint. balanceAfter = số dư điểm sau giao dịch.
+model LoyaltyLedger {
+  id           String         @id @default(uuid()) @db.Uuid
+  tenantId     String         @map("tenant_id") @db.Uuid
+  customerId   String         @map("customer_id") @db.Uuid
+  type         LoyaltyTxnType
+  points       Int // dương khi cộng, âm khi trừ
+  balanceAfter Int            @map("balance_after") // số dư điểm sau giao dịch
+  refInvoiceId String?        @map("ref_invoice_id") @db.Uuid // hóa đơn liên quan (nếu có)
+  moneyValue   BigInt         @default(0) @map("money_value") // giá trị quy đổi (VNĐ) cho REDEEM
+  note         String?
+  createdById  String?        @map("created_by_id") @db.Uuid
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, customerId, createdAt])
+  @@index([tenantId, type])
+  @@map("loyalty_ledgers")
+}
+
+/// Đánh giá dịch vụ/nhân viên (Round 17 phần B). Tách khỏi InvoiceFeedback để
+/// gắn được operatorId phục vụ báo cáo điểm trung bình theo nhân viên.
+model Rating {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  invoiceId  String?  @map("invoice_id") @db.Uuid
+  operatorId String?  @map("operator_id") @db.Uuid // nhân viên được đánh giá
+  customerId String?  @map("customer_id") @db.Uuid
+  score      Int // 1..5
+  comment    String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  operator Operator? @relation(fields: [operatorId], references: [id], onDelete: SetNull)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, operatorId])
+  @@map("ratings")
+}
+
+// ============================================================================
+// KHẢO SÁT KHÁCH HÀNG (Survey) — Round 21. Chỉ THÊM bảng mới, không sửa bảng cũ.
+// ============================================================================
+
+enum SurveyQuestionType {
+  RATING // thang điểm 1..5
+  SINGLE_CHOICE // chọn 1 trong nhiều
+  MULTI_CHOICE // chọn nhiều
+  TEXT // trả lời tự do
+}
+
+/// Bộ khảo sát của tenant (gồm nhiều câu hỏi). active = đang mở thu phản hồi.
+model Survey {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  questions SurveyQuestion[]
+  responses SurveyResponse[]
+
+  @@index([tenantId, active])
+  @@map("surveys")
+}
+
+/// Một câu hỏi trong khảo sát. options (JSON string[]) dùng cho SINGLE/MULTI_CHOICE.
+model SurveyQuestion {
+  id         String             @id @default(uuid()) @db.Uuid
+  surveyId   String             @map("survey_id") @db.Uuid
+  content    String
+  type       SurveyQuestionType
+  options    Json? // danh sách lựa chọn cho câu SINGLE/MULTI_CHOICE
+  orderIndex Int                @default(0) @map("order_index")
+  required   Boolean            @default(false)
+
+  survey  Survey         @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  answers SurveyAnswer[]
+
+  @@index([surveyId, orderIndex])
+  @@map("survey_questions")
+}
+
+/// Một lượt phản hồi khảo sát (có thể gắn khách hàng/hóa đơn hoặc ẩn danh).
+model SurveyResponse {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  surveyId   String   @map("survey_id") @db.Uuid
+  customerId String?  @map("customer_id") @db.Uuid
+  invoiceId  String?  @map("invoice_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  survey   Survey         @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  customer Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  answers  SurveyAnswer[]
+
+  @@index([tenantId, surveyId, createdAt])
+  @@map("survey_responses")
+}
+
+/// Đáp án cho từng câu trong một lượt phản hồi.
+/// valueScore (RATING), valueText (TEXT), valueOptions (JSON string[] cho CHOICE).
+model SurveyAnswer {
+  id           String  @id @default(uuid()) @db.Uuid
+  responseId   String  @map("response_id") @db.Uuid
+  questionId   String  @map("question_id") @db.Uuid
+  valueScore   Int?    @map("value_score")
+  valueText    String? @map("value_text")
+  valueOptions Json?   @map("value_options")
+
+  response SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  question SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([responseId])
+  @@index([questionId])
+  @@map("survey_answers")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Public link cho bản tự cài — mô hình lấy theo pos_banhang (rabitpos).
+//
+// Bối cảnh: cửa hàng tải bản cài về, chạy trên máy của mình và dùng offline
+// bình thường. Khi muốn truy cập được từ bên ngoài (điện thoại, chi nhánh,
+// khách đặt lịch), họ đăng nhập tài khoản trung tâm ở rabitspa.com và xin cấp
+// link public. Máy tại cửa hàng KHÔNG mở cổng nào ra Internet — nó tự mở một
+// kết nối đi ra tới Cloudflare, và Cloudflare đưa request vào đúng kết nối đó.
+//
+// Ba bảng dưới đây nối tài khoản trên web với tiến trình đang chạy ở máy khách:
+//   SsoCode     — trao phiên đăng nhập từ rabitspa.com sang subdomain cửa hàng
+//   PairingCode — mã ngắn hạn để máy tại cửa hàng nhận thông tin kết nối
+//   Instance    — từng máy đã ghép, để biết máy nào còn sống
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Mã trao phiên dùng MỘT LẦN, sống rất ngắn.
+///
+/// Đăng nhập diễn ra tập trung ở rabitspa.com (kể cả đăng nhập bằng Google),
+/// nhưng ứng dụng lại chạy ở subdomain riêng của từng cửa hàng — hai nơi khác
+/// origin nên không dùng chung được cookie/localStorage. Thay vì gửi thẳng
+/// token đăng nhập qua URL (sẽ nằm lại trong lịch sử trình duyệt, log máy chủ,
+/// header Referer), trang chủ chỉ chuyển sang subdomain kèm một mã ngẫu nhiên;
+/// subdomain đổi mã đó lấy token thật qua một lần gọi API, rồi mã hết hiệu lực.
+model SsoCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  code      String    @unique // chuỗi ngẫu nhiên, chỉ dùng được một lần
+  userId    String    @map("user_id") @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  usedAt    DateTime? @map("used_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([expiresAt])
+  @@map("sso_codes")
+}
+
+/// Mã ghép máy — cách máy tại cửa hàng chứng minh nó thuộc về tài khoản nào.
+///
+/// Chủ cửa hàng bấm "Ghép máy" trên web, nhận một mã ngắn rồi gõ vào ứng dụng
+/// đang chạy ở máy mình. Máy đó gọi API đổi mã lấy thông tin kết nối. Nhờ vậy
+/// ứng dụng tại chỗ không cần lưu mật khẩu tài khoản.
+///
+/// `connectorSecretEnc` giữ thông tin kết nối tunnel ở dạng đã mã hoá, chỉ tồn
+/// tại trong lúc chờ ghép: đổi mã xong là xoá ngay. Ai đọc trộm được database
+/// trong khoảng đó cũng không dùng được nếu không có khoá mã hoá.
+model PairingCode {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @map("tenant_id") @db.Uuid
+  code               String    @unique // mã ngắn cho người dùng gõ tay
+  connectorSecretEnc String?   @map("connector_secret_enc") // đã mã hoá, xoá sau khi ghép
+  expiresAt          DateTime  @map("expires_at") @db.Timestamptz
+  usedAt             DateTime? @map("used_at") @db.Timestamptz
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, usedAt])
+  @@index([expiresAt])
+  @@map("pairing_codes")
+}
+
+/// Một máy tại cửa hàng đã ghép thành công.
+///
+/// `deviceToken` là "thẻ ra vào" lâu dài của máy đó: mọi lần báo còn sống hay
+/// gửi số liệu về sau đều dùng token này thay cho tài khoản người dùng. Gỡ một
+/// máy bị mất chỉ cần xoá bản ghi tương ứng, không ảnh hưởng máy khác.
+model Instance {
+  id                 String    @id @default(uuid()) @db.Uuid
+  tenantId           String    @map("tenant_id") @db.Uuid
+  machineFingerprint String?   @map("machine_fingerprint") // dấu vân máy, để nhận ra máy cũ ghép lại
+  os                 String? // hệ điều hành, phục vụ thống kê
+  appVersion         String?   @map("app_version")
+  deviceToken        String    @unique @map("device_token")
+  lastSeenAt         DateTime? @map("last_seen_at") @db.Timestamptz
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("instances")
+}
