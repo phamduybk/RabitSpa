@@ -1,23 +1,27 @@
 # Tệp sinh riêng trên từng máy khi chạy — không đưa lên kho phát hành.
-.machine-code
-.secrets.env
-.pairing.json
-cloudflared/config.yml
-cloudflared/credentials.json
-cloudflared/cloudflared
-cloudflared/*.log
+/.machine-code
+/.secrets.env
+/.pairing.json
+/cloudflared/config.yml
+/cloudflared/credentials.json
+/cloudflared/cloudflared
+/cloudflared/*.log
 
 # Bộ chạy Node tự tải ở lần chạy đầu (tệp vượt giới hạn 100 MB của GitHub).
-node/
+#
+# Dấu gạch chéo đầu dòng là bắt buộc: không có nó, mẫu này loại MỌI thư mục tên
+# "node" ở bất kỳ đâu — kể cả @types/node và @lukeed/csprng/node nằm trong thư
+# viện — và bản tải về sẽ thiếu tệp, chạy lên báo "không tìm thấy module".
+/node/
 
 # Dữ liệu thật của cửa hàng. Tệp rabitspa.db MẪU thì có đẩy — nó là dữ liệu
 # khởi tạo; còn các tệp phụ dưới đây sinh ra lúc chạy.
-backend/rabitspa.db-wal
-backend/rabitspa.db-shm
-backend/rabitspa.db.bak*
-backend/rabitspa.seed.db
-uploads/*
-!uploads/.gitkeep
+/backend/rabitspa.db-wal
+/backend/rabitspa.db-shm
+/backend/rabitspa.db.bak*
+/backend/rabitspa.seed.db
+/uploads/*
+!/uploads/.gitkeep
 
 .DS_Store
-*.log
+/*.log
